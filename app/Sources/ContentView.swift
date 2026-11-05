@@ -82,18 +82,22 @@ private extension CGFloat {
 
 struct ContentView: View {
     @StateObject private var model = PanelModel()
+    /// Panel diameter as a fraction of the shorter screen side. The rest of the
+    /// screen is reserved for the cabinet frame / LED ring.
+    private let panelScale: CGFloat = 0.78
 
     var body: some View {
         GeometryReader { geometry in
-            let side = min(geometry.size.width, geometry.size.height)
+            let side = min(geometry.size.width, geometry.size.height) * panelScale
             ZStack {
                 Color.black.ignoresSafeArea()
 
                 panel(size: side)
                     .frame(width: side, height: side)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
-
-                status(side: side)
+            }
+            .overlay(alignment: .topLeading) {
+                status.padding(14)
             }
             .overlay(alignment: .topTrailing) {
                 toggles.padding(14)
@@ -146,7 +150,7 @@ struct ContentView: View {
         }
     }
 
-    private func status(side: CGFloat) -> some View {
+    private var status: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(model.connected ? "PC 已连接" : "PC 未连接")
                 .foregroundStyle(model.connected ? Color.green : Color.orange)
@@ -155,9 +159,6 @@ struct ContentView: View {
         }
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .foregroundStyle(Color.white.opacity(0.75))
-        .padding(10)
-        .frame(width: side, height: side, alignment: .topLeading)
-        .offset(x: 0, y: 0)
         .allowsHitTesting(false)
     }
 
