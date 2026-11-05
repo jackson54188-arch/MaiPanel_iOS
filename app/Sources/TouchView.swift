@@ -112,6 +112,9 @@ final class OuterButtonPadView: UIView {
     private static let innerScale: CGFloat = 1.03
     private static let outerScale: CGFloat = 1.35
     private static let halfSpan: CGFloat = 14.0 * CGFloat.pi / 180
+    /// Angular clearance (degrees, on each side) between a button and the
+    /// decorative filler segment that sits in the gap next to it.
+    private static let gap: CGFloat = 2.0 * CGFloat.pi / 180
 
     private var padCenter: CGPoint = .zero
     private var panelRadius: CGFloat = 0
@@ -151,14 +154,25 @@ final class OuterButtonPadView: UIView {
         }
     }
 
-    private func buttonPath(_ index: Int, grow: CGFloat = 0, anglePad: CGFloat = 0) -> UIBezierPath {
-        let start = angles[index] - Self.halfSpan - anglePad
-        let end = angles[index] + Self.halfSpan + anglePad
+    private func segmentPath(center: CGFloat, half: CGFloat, grow: CGFloat = 0) -> UIBezierPath {
         let path = UIBezierPath()
-        addArc(to: path, radius: innerRadius, from: start, to: end)
-        addArc(to: path, radius: outerRadius + grow, from: end, to: start)
+        addArc(to: path, radius: innerRadius, from: center - half, to: center + half)
+        addArc(to: path, radius: outerRadius + grow, from: center + half, to: center - half)
         path.close()
         return path
+    }
+
+    private func buttonPath(_ index: Int, grow: CGFloat = 0, anglePad: CGFloat = 0) -> UIBezierPath {
+        segmentPath(center: angles[index], half: Self.halfSpan + anglePad, grow: grow)
+    }
+
+    /// Slot between button `index` and the next one, shrunk by `gap` on both
+    /// sides so the filler piece does not touch either button.
+    private func fillerSpan(_ index: Int) -> (center: CGFloat, half: CGFloat) {
+        let next = (index + 1) % angles.count
+        var delta = angles[next] - angles[index]
+        while delta <= 0 { delta += 2 * .pi }
+        return (angles[index] + delta / 2, delta / 2 - Self.halfSpan - Self.gap)
     }
 
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
@@ -227,6 +241,19 @@ final class OuterButtonPadView: UIView {
         guard let context = UIGraphicsGetCurrentContext(), panelRadius > 0 else { return }
         let font = UIFont.monospacedDigitSystemFont(ofSize: max(12, thickness * 0.55), weight: .semibold)
         let midRadius = (innerRadius + outerRadius) / 2
+
+        // The gaps between buttons are cabinet ring, not buttons: same arc
+        // trapezoids but flat and dimmer, and they ignore touches.
+        for index in angles.indices {
+            let slot = fillerSpan(index)
+            guard slot.half > 0 else { continue }
+            let path = segmentPath(center: slot.center, half: slot.half)
+            context.setFillColor(UIColor.white.withAlphaComponent(lights ? 0.18 : 0.05).cgColor)
+            path.fill()
+            context.setStrokeColor(UIColor.white.withAlphaComponent(lights ? 0.42 : 0.18).cgColor)
+            context.setLineWidth(max(1, thickness * 0.06))
+            path.stroke()
+        }
 
         for index in 0..<8 {
             let on = (pressed & UInt8(1 << index)) != 0
