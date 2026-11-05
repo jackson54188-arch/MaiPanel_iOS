@@ -11,6 +11,7 @@ final class PanelModel: ObservableObject {
     @Published var mirrored = false
     @Published var rotated = false
     @Published var showLabels = true
+    @Published var showLights = true
     @Published private(set) var scopeIndex = 1
 
     private static let scopes: [CGFloat] = [0.012, 0.02, 0.03]
@@ -112,6 +113,7 @@ struct ContentView: View {
                     ringRadius: side * 0.575,
                     buttonRadius: side * 0.047,
                     pressed: model.buttons,
+                    lights: model.showLights,
                     onChange: { model.handleButtons($0) }
                 )
                 .frame(width: geometry.size.width, height: geometry.size.height)
@@ -190,6 +192,7 @@ struct ContentView: View {
             chip("镜像", isOn: model.mirrored) { model.mirrored.toggle() }
             chip("旋转", isOn: model.rotated) { model.rotated.toggle() }
             chip("编号", isOn: model.showLabels) { model.showLabels.toggle() }
+            chip("灯光", isOn: model.showLights) { model.showLights.toggle() }
             chip("范围 \(model.scopeLabel)", isOn: false) { model.cycleScope() }
         }
     }

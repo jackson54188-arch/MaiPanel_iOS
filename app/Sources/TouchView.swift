@@ -69,6 +69,7 @@ struct OuterButtonPad: UIViewRepresentable {
     let ringRadius: CGFloat
     let buttonRadius: CGFloat
     let pressed: UInt8
+    let lights: Bool
     let onChange: (UInt8) -> Void
 
     func makeUIView(context: Context) -> OuterButtonPadView {
@@ -79,6 +80,7 @@ struct OuterButtonPad: UIViewRepresentable {
         view.onChange = onChange
         view.update(center: center, ringRadius: ringRadius, buttonRadius: buttonRadius)
         view.pressed = pressed
+        view.lights = lights
         return view
     }
 
@@ -86,6 +88,7 @@ struct OuterButtonPad: UIViewRepresentable {
         view.onChange = onChange
         view.update(center: center, ringRadius: ringRadius, buttonRadius: buttonRadius)
         view.pressed = pressed
+        view.lights = lights
     }
 }
 
@@ -94,6 +97,11 @@ final class OuterButtonPadView: UIView {
     var pressed: UInt8 = 0 {
         didSet {
             if pressed != oldValue { setNeedsDisplay() }
+        }
+    }
+    var lights = true {
+        didSet {
+            if lights != oldValue { setNeedsDisplay() }
         }
     }
 
@@ -184,9 +192,36 @@ final class OuterButtonPadView: UIView {
                 height: buttonRadius * 2
             )
             let on = (pressed & UInt8(1 << index)) != 0
-            context.setFillColor(on ? UIColor.white.cgColor : UIColor.white.withAlphaComponent(0.10).cgColor)
-            context.fillEllipse(in: box)
-            context.setStrokeColor(UIColor.white.withAlphaComponent(on ? 0.9 : 0.45).cgColor)
+
+            if lights {
+                // Backlight halo: four nested discs of falling alpha, drawn
+                // outside in. Cheaper than a shadow and stays crisp when the
+                // eight buttons redraw.
+                let base = on ? 0.10 : 0.04
+                for step in stride(from: 4, through: 1, by: -1) {
+                    let radius = buttonRadius * (1 + 0.45 * CGFloat(step) / 4)
+                    let alpha = base * CGFloat(5 - step) / 4
+                    context.setFillColor(UIColor.white.withAlphaComponent(alpha).cgColor)
+                    context.fillEllipse(in: CGRect(
+                        x: center.x - radius,
+                        y: center.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    ))
+                }
+                // Frosted acrylic body: white, semi-transparent when idle.
+                context.setFillColor(
+                    (on ? UIColor.white : UIColor.white.withAlphaComponent(0.30)).cgColor
+                )
+                context.fillEllipse(in: box)
+                context.setStrokeColor(UIColor.white.withAlphaComponent(on ? 1.0 : 0.60).cgColor)
+            } else {
+                context.setFillColor(
+                    (on ? UIColor.white.withAlphaComponent(0.85) : UIColor.clear).cgColor
+                )
+                context.fillEllipse(in: box)
+                context.setStrokeColor(UIColor.white.withAlphaComponent(on ? 0.9 : 0.30).cgColor)
+            }
             context.setLineWidth(max(1, buttonRadius * 0.06))
             context.strokeEllipse(in: box)
 
