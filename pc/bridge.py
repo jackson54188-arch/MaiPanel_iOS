@@ -15,6 +15,7 @@ Run:
 """
 
 import argparse
+import json
 import socket
 import struct
 import subprocess
@@ -39,6 +40,96 @@ FRAME_MAGIC = b"MPNL"
 FRAME_TOUCH = 0x01
 FRAME_PING = 0x02
 FRAME_PONG = 0x03
+FRAME_BUTTONS = 0x04
+
+# Outer buttons 1..8 -> keyboard E D C X Z A Q W (virtual key codes).
+BUTTON_VKS = (0x45, 0x44, 0x43, 0x58, 0x5A, 0x41, 0x51, 0x57)
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [
+            ("wVk", wintypes.WORD),
+            ("wScan", wintypes.WORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx", wintypes.LONG),
+            ("dy", wintypes.LONG),
+            ("mouseData", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
+    class _HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg", wintypes.DWORD),
+            ("wParamL", wintypes.WORD),
+            ("wParamH", wintypes.WORD),
+        ]
+
+    class _INPUTUNION(ctypes.Union):
+        _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT), ("hi", _HARDWAREINPUT)]
+
+    class _INPUT(ctypes.Structure):
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
+
+    _INPUT_KEYBOARD = 1
+    _KEYEVENTF_KEYUP = 0x0002
+
+
+class KeyInjector:
+    """Turns the iPad outer-button bitmask into real keyboard presses."""
+
+    def __init__(self):
+        self.mask = 0
+        self.lock = threading.Lock()
+        self.enabled = sys.platform == "win32"
+        self._last_error = 0.0
+        if not self.enabled:
+            log("非 Windows 环境, 外键只记录不会真的按键")
+
+    def set_mask(self, mask):
+        mask &= 0xFF
+        with self.lock:
+            changed = self.mask ^ mask
+            if not changed:
+                return
+            for index, vk in enumerate(BUTTON_VKS):
+                bit = 1 << index
+                if changed & bit:
+                    self._send(vk, down=bool(mask & bit))
+            self.mask = mask
+            pressed = [str(i + 1) for i in range(len(BUTTON_VKS)) if (mask >> i) & 1]
+            log("外键 " + (" ".join(pressed) if pressed else "无"))
+
+    def release_all(self):
+        self.set_mask(0)
+
+    def _send(self, vk, down):
+        if not self.enabled:
+            return
+        event = _INPUT()
+        event.type = _INPUT_KEYBOARD
+        event.ki = _KEYBDINPUT(
+            wVk=vk,
+            wScan=0,
+            dwFlags=0 if down else _KEYEVENTF_KEYUP,
+            time=0,
+            dwExtraInfo=0,
+        )
+        sent = ctypes.windll.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_INPUT))
+        if not sent and time.time() - self._last_error > 10:
+            self._last_error = time.time()
+            log(f"按键注入失败 (SendInput={sent}), 检查权限或游戏是否在前台")
 
 
 def build_packet(mask):
@@ -93,11 +184,25 @@ class SerialLink:
     """Owns the panel side of the virtual COM pair."""
 
     def __init__(self, port, baud):
-        self.ser = open_serial(port, baud)
+        self.port = port
+        self.baud = baud
+        self.ser = None
         self.lock = threading.Lock()
-        self.connected = isinstance(self.ser, DrySerial)
+        self.connected = False
         self.mask = 0
         self.running = True
+        self._connect()
+
+    def _connect(self):
+        try:
+            self.ser = open_serial(self.port, self.baud)
+        except Exception as error:
+            self.ser = None
+            log(f"串口 {self.port} 打不开, 稍后重试: {error}")
+            return False
+        if isinstance(self.ser, DrySerial):
+            self.connected = True
+        return True
 
     def start(self):
         threading.Thread(target=self._reader, daemon=True).start()
@@ -106,6 +211,12 @@ class SerialLink:
     def _reader(self):
         buf = bytearray()
         while self.running:
+            if self.ser is None:
+                time.sleep(2)
+                with self.lock:
+                    if self.ser is None:
+                        self._connect()
+                continue
             try:
                 waiting = self.ser.in_waiting
                 if not waiting:
@@ -114,6 +225,12 @@ class SerialLink:
                 buf += self.ser.read(waiting)
             except Exception as error:  # serial disappears when the game exits
                 log(f"串口读取失败: {error}")
+                self.connected = False
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
                 time.sleep(0.5)
                 continue
 
@@ -149,6 +266,8 @@ class SerialLink:
 
     def _raw_write(self, data):
         with self.lock:
+            if self.ser is None:
+                return
             try:
                 self.ser.write(data)
             except Exception as error:
@@ -166,14 +285,31 @@ class SerialLink:
 
 
 class AppLink:
-    """TCP client to the forwarded iPad port."""
+    """TCP client to the forwarded iPad port.
 
-    def __init__(self, host, port, on_mask):
+    `pymobiledevice3 usbmux forward` accepts local connections even when no
+    device is behind it, so a successful TCP connect proves nothing. The link
+    only counts as connected after the app's first frame arrives.
+    """
+
+    def __init__(self, host, port, on_mask, on_buttons):
         self.host = host
         self.port = port
         self.on_mask = on_mask
+        self.on_buttons = on_buttons
         self.running = True
         self.sock = None
+        self.linked = False
+        self.connected = False
+        self.buttons = 0
+        self.last_frame = 0.0
+        self.last_connect = 0.0
+        self.last_connect_log = 0.0
+
+    @property
+    def forward_up(self):
+        """Forward port answered recently, even if it drops us straight away."""
+        return self.linked or time.time() - self.last_connect < 15
 
     def start(self):
         threading.Thread(target=self._loop, daemon=True).start()
@@ -186,25 +322,42 @@ class AppLink:
                 time.sleep(1)
                 continue
             self.sock = sock
-            sock.settimeout(None)
-            log(f"已连接 iPad {self.host}:{self.port}")
+            self.linked = True
+            self.last_connect = time.time()
+            self.last_frame = time.time()
+            if time.time() - self.last_connect_log > 10:
+                self.last_connect_log = time.time()
+                log(f"转发端口已连上 {self.host}:{self.port}, 等待 iPad 数据")
             try:
                 self._read_frames(sock)
             except OSError:
                 pass
             finally:
-                log("iPad 连接断开")
+                self.linked = False
+                if self.connected:
+                    log("iPad 连接断开")
+                self.connected = False
                 self.on_mask(0)
+                self.on_buttons(0)
                 try:
                     sock.close()
                 except OSError:
                     pass
                 self.sock = None
+                time.sleep(1)
 
     def _read_frames(self, sock):
+        sock.settimeout(1.0)
         buf = bytearray()
         while self.running:
-            chunk = sock.recv(4096)
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                silent = time.time() - self.last_frame
+                if silent > 5:
+                    log("iPad 无数据, 重新连接")
+                    return
+                continue
             if not chunk:
                 return
             buf += chunk
@@ -218,10 +371,106 @@ class AppLink:
                 frame_type = buf[5]
                 payload = bytes(buf[8:8 + length])
                 del buf[:8 + length]
+                self.last_frame = time.time()
+                if not self.connected:
+                    self.connected = True
+                    log("iPad 数据已到达, 链路确认")
                 if frame_type == FRAME_TOUCH and len(payload) >= 5:
                     self.on_mask(int.from_bytes(payload[:5], "little"))
+                elif frame_type == FRAME_BUTTONS and payload:
+                    self.buttons = payload[0]
+                    self.on_buttons(self.buttons)
                 elif frame_type == FRAME_PING:
                     sock.sendall(FRAME_MAGIC + bytes([1, FRAME_PONG, 0, 0]))
+
+
+class MonitorHub:
+    """Broadcasts bridge state as JSON lines to the PC monitor window."""
+
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.clients = []
+        self.lock = threading.Lock()
+        self.running = True
+        self.server = None
+        self.last = None
+
+    def start(self):
+        try:
+            self.server = socket.create_server((self.host, self.port))
+        except OSError as error:
+            log(f"监视端口 {self.port} 打开失败: {error}")
+            return False
+        threading.Thread(target=self._accept, daemon=True).start()
+        log(f"监视窗口端口 {self.host}:{self.port}")
+        return True
+
+    def _accept(self):
+        while self.running:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            client.settimeout(None)
+            with self.lock:
+                self.clients.append(client)
+                last = self.last
+            if last is not None:
+                try:
+                    client.sendall(last)
+                except OSError:
+                    pass
+            log("监视窗口已连接")
+
+    def publish(self, state):
+        line = (json.dumps(state, ensure_ascii=False) + "\n").encode()
+        self.last = line
+        dead = []
+        with self.lock:
+            for client in self.clients:
+                try:
+                    client.sendall(line)
+                except OSError:
+                    dead.append(client)
+            for client in dead:
+                self.clients.remove(client)
+                try:
+                    client.close()
+                except OSError:
+                    pass
+
+    def close(self):
+        self.running = False
+        try:
+            self.server.close()
+        except OSError:
+            pass
+        with self.lock:
+            for client in self.clients:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+            self.clients.clear()
+
+
+def status_loop(hub, serial_link, app_link):
+    last = None
+    while hub.running:
+        mask = serial_link.mask
+        state = {
+            "mask": mask,
+            "serial": bool(serial_link.connected),
+            "app": bool(app_link.connected),
+            "app_tcp": bool(app_link.forward_up),
+            "zones": zone_names(mask),
+            "buttons": app_link.buttons,
+        }
+        if state != last:
+            hub.publish(state)
+            last = state
+        time.sleep(0.01)
 
 
 def start_forward(local_port, device_port):
@@ -240,14 +489,25 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=24870)
     parser.add_argument("--usb", action="store_true", help="顺带启动 pymobiledevice3 usbmux forward")
+    parser.add_argument("--hub-port", type=int, default=24871,
+                        help="监视窗口端口, 0 = 不广播")
     args = parser.parse_args()
 
     forward = start_forward(args.port, args.port) if args.usb else None
 
     serial_link = SerialLink(args.serial, args.baud)
-    app_link = AppLink(args.host, args.port, serial_link.set_mask)
+    injector = KeyInjector()
+    app_link = AppLink(args.host, args.port, serial_link.set_mask, injector.set_mask)
     serial_link.start()
     app_link.start()
+    hub = None
+    if args.hub_port:
+        hub = MonitorHub("127.0.0.1", args.hub_port)
+        if hub.start():
+            threading.Thread(target=status_loop, args=(hub, serial_link, app_link),
+                             daemon=True).start()
+        else:
+            hub = None
     log(f"串口 {args.serial}@{args.baud} 就绪, 等待 iPad {args.host}:{args.port}")
 
     try:
@@ -264,12 +524,16 @@ def main():
                 log("清空触摸")
             elif line == "s":
                 log(f"串口连接: {serial_link.connected}  mask={serial_link.mask:#x} "
-                    f"{' '.join(zone_names(serial_link.mask))}")
+                    f"{' '.join(zone_names(serial_link.mask))}  "
+                    f"外键={injector.mask:#04x}")
     except KeyboardInterrupt:
         pass
     finally:
         app_link.running = False
+        injector.release_all()
         serial_link.close()
+        if hub:
+            hub.close()
         if forward:
             forward.terminate()
         log("已退出")

@@ -7,6 +7,7 @@ final class PanelServer {
     private var listener: NWListener?
     private var connection: NWConnection?
     private var lastMask: UInt64 = 0
+    private var lastButtons: UInt8 = 0
     private var keepAlive: DispatchSourceTimer?
 
     var onConnected: (() -> Void)?
@@ -38,6 +39,7 @@ final class PanelServer {
             timer.setEventHandler { [weak self] in
                 guard let self, let connection = self.connection else { return }
                 self.send(encodeFrame(.touch, encodeTouch(self.lastMask)), on: connection)
+                self.send(encodeFrame(.buttons, encodeButtons(self.lastButtons)), on: connection)
             }
             timer.resume()
             self.keepAlive = timer
@@ -53,6 +55,15 @@ final class PanelServer {
         }
     }
 
+    func sendButtons(mask: UInt8) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.lastButtons = mask
+            guard let connection = self.connection else { return }
+            self.send(encodeFrame(.buttons, encodeButtons(mask)), on: connection)
+        }
+    }
+
     private func accept(_ connection: NWConnection) {
         self.connection?.cancel()
         self.connection = connection
@@ -62,6 +73,7 @@ final class PanelServer {
             case .ready:
                 DispatchQueue.main.async { self.onConnected?() }
                 self.send(encodeFrame(.touch, encodeTouch(self.lastMask)), on: connection)
+                self.send(encodeFrame(.buttons, encodeButtons(self.lastButtons)), on: connection)
                 self.receive(on: connection)
             case .failed, .cancelled:
                 if self.connection === connection {

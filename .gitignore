@@ -5,3 +5,5 @@ app/xcodebuild.log
 *.ipa
 Payload/
 __pycache__/
+dist/
+build/

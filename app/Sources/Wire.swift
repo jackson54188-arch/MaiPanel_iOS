@@ -16,6 +16,7 @@ enum FrameType: UInt8 {
     case touch = 0x01
     case ping = 0x02
     case pong = 0x03
+    case buttons = 0x04
     case video = 0x10
 }
 
@@ -38,6 +39,11 @@ func encodeFrame(_ type: FrameType, _ payload: Data) -> Data {
 func encodeTouch(_ mask: UInt64) -> Data {
     var value = mask.littleEndian
     return withUnsafeBytes(of: &value) { Data($0.prefix(5)) }
+}
+
+/// Outer buttons 1...8, bit 0 = button 1. One byte is enough.
+func encodeButtons(_ mask: UInt8) -> Data {
+    Data([mask])
 }
 
 func zoneMask(of zones: Set<String>) -> UInt64 {

@@ -6,6 +6,7 @@ final class PanelModel: ObservableObject {
     @Published private(set) var zones: Set<String> = []
     @Published private(set) var fingers: [CGPoint] = []
     @Published private(set) var connected = false
+    @Published private(set) var buttons: UInt8 = 0
 
     @Published var mirrored = false
     @Published var rotated = false
@@ -14,6 +15,9 @@ final class PanelModel: ObservableObject {
 
     private static let scopes: [CGFloat] = [0.012, 0.02, 0.03]
     var scopeLabel: String { ["小", "中", "大"][scopeIndex] }
+    var pressedButtons: [Int] {
+        (0..<8).filter { (buttons & UInt8(1 << $0)) != 0 }.map { $0 + 1 }
+    }
 
     func cycleScope() {
         scopeIndex = (scopeIndex + 1) % Self.scopes.count
@@ -60,6 +64,12 @@ final class PanelModel: ObservableObject {
         server.sendTouch(mask: zoneMask(of: hits))
     }
 
+    func handleButtons(_ mask: UInt8) {
+        guard mask != buttons else { return }
+        buttons = mask
+        server.sendButtons(mask: mask)
+    }
+
     private static func loadCenters() -> [String: CGPoint] {
         guard
             let url = Bundle.main.url(forResource: "zone_centers", withExtension: "json"),
@@ -89,12 +99,22 @@ struct ContentView: View {
     var body: some View {
         GeometryReader { geometry in
             let side = min(geometry.size.width, geometry.size.height) * panelScale
+            let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
             ZStack {
                 Color.black.ignoresSafeArea()
 
                 panel(size: side)
                     .frame(width: side, height: side)
-                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                    .position(center)
+
+                OuterButtonPad(
+                    center: center,
+                    ringRadius: side * 0.575,
+                    buttonRadius: side * 0.047,
+                    pressed: model.buttons,
+                    onChange: { model.handleButtons($0) }
+                )
+                .frame(width: geometry.size.width, height: geometry.size.height)
             }
             .overlay(alignment: .topLeading) {
                 status.padding(14)
@@ -156,6 +176,9 @@ struct ContentView: View {
                 .foregroundStyle(model.connected ? Color.green : Color.orange)
             Text("端口 \(panelServicePort)")
             Text(model.zones.isEmpty ? "触摸: 无" : "触摸: " + model.zones.sorted().joined(separator: " "))
+            Text(model.pressedButtons.isEmpty
+                 ? "外键: 无"
+                 : "外键: " + model.pressedButtons.map(String.init).joined(separator: " "))
         }
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .foregroundStyle(Color.white.opacity(0.75))

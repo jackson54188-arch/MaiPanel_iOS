@@ -11,7 +11,9 @@ import sys
 import threading
 import time
 
-from bridge import FRAME_MAGIC, FRAME_PING, FRAME_TOUCH, ZONES, log
+from bridge import (
+    FRAME_BUTTONS, FRAME_MAGIC, FRAME_PING, FRAME_TOUCH, ZONES, log,
+)
 
 
 def frame(frame_type, payload):
@@ -20,6 +22,10 @@ def frame(frame_type, payload):
 
 def send_mask(conn, mask):
     conn.sendall(frame(FRAME_TOUCH, mask.to_bytes(5, "little")))
+
+
+def send_buttons(conn, mask):
+    conn.sendall(frame(FRAME_BUTTONS, bytes([mask])))
 
 
 def session(conn):
@@ -31,6 +37,12 @@ def session(conn):
             time.sleep(0.3)
         send_mask(conn, 0)
         log("TX 全部松开")
+        for index in range(8):
+            send_buttons(conn, 1 << index)
+            log(f"BTN {index + 1}")
+            time.sleep(0.3)
+        send_buttons(conn, 0)
+        log("BTN 全部松开")
         while True:
             time.sleep(1)
     except OSError:

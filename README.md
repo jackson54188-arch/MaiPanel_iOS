@@ -17,7 +17,11 @@ iPad (MaiPanel.app)                      电脑
 ## 目录
 
 - `app/` — iOS 工程源码（XcodeGen 描述，无签名，无个人信息）
-- `pc/bridge.py` — 电脑侧桥接：TCP ⇄ 虚拟串口
+- `pc/bridge.py` — 电脑侧桥接：TCP ⇄ 虚拟串口，顺带广播状态给监视窗口
+- `pc/bridge.bat` — 双击启动桥接（自动拉起 usbmux 转发）
+- `pc/panel_monitor.py` — 电脑端自检窗口：iPad 按哪块，哪块就亮
+- `dist/MaiPanel.exe` — 自检窗口打包版，双击即用，不需要装 Python
+- `pc/build_exe.bat` — 重新打包上面那个 exe
 - `pc/sim_app.py` — 假 iPad，没有真机时用来验证桥接和协议
 - `game/touch_probe.py` — 只发触摸包的串口探针（在 `D:\SEGA\Maimai\tools\`）
 - `game/install_com0com.bat` — 装 com0com 并建 COM3↔COM33（需要管理员）
@@ -40,8 +44,8 @@ iPad (MaiPanel.app)                      电脑
 ## 运行顺序
 
 ```
-:: 1. 电脑：启动桥接（自动拉起 usbmux 转发）
-python pc\bridge.py --serial COM33 --usb
+:: 1. 电脑：双击 pc\bridge.bat（自动拉起 usbmux 转发）
+::    等价于 python pc\bridge.py --serial COM33 --usb
 
 :: 2. iPad：打开 MaiPanel，状态显示「PC 已连接」
 
@@ -49,11 +53,74 @@ python pc\bridge.py --serial COM33 --usb
 D:\SEGA\Maimai\启动.bat
 ```
 
+## 外键（1–8）
+
+iPad 圆盘外侧一圈是 8 个外键，按下后经同一条 USB 连接发给电脑，
+由 `bridge.py` 用 `SendInput` 注入键盘，等效于按物理键盘：
+
+```
+外键 1 2 3 4 5 6 7 8
+键盘 E D C X Z A Q W
+```
+
+这套映射已经写进 `segatools.ini` 的 `1p_btn1..8` 和
+`AquaMai.toml` 的 `Button1..8_1P`，所以游戏里就是 1P 的 1–8 号键。
+按键发到当前前台窗口，玩的时候让游戏在前台即可；iPad 上按住不放
+电脑也保持按住，多键同时按（和弦）同样支持。
+
+App 左上角状态里会显示 `外键: 1 3` 这样的实时状态；
+`sim_app.py` 也会把 1–8 逐个按一遍，方便没有 iPad 时验证。
+
+## 电脑端自检窗口
+
+游戏没开的时候也能看 iPad 有没有按对。直接双击 `dist\MaiPanel.exe`，
+或者从源码跑：
+
+```
+python pc\panel_monitor.py            :: 连 bridge.py，实时亮区
+python pc\panel_monitor.py --demo     :: 不连 bridge，自动轮流点亮 34 区
+```
+
+界面是黑底白字的一个大圆盘：深灰分区 = 未按，纯白 + 光晕 = 正在按，
+激活区的编号变黑。下方是连接状态和当前掩码，没有任何弹窗。
+
+三行状态的含义：
+
+- `桥接程序` — bridge.py 在跑，并且监视端口连上了。
+- `游戏串口` — 游戏已经握手并接受了这块手台。
+- `iPad 面板` — 只有收到 iPad 的真实数据帧才算「已连接」。
+  **注意：`pymobiledevice3 usbmux forward` 即使没接 iPad 也会接受本地
+  TCP 连接，所以「端口能连上」不证明 iPad 在线。** 出现
+  `无数据（检查 USB 转发）` 时，说明转发端口通了但 iPad 没回数据：
+  检查 USB 线、解锁 iPad、并让 App 保持在前台。
+
+窗口按 Esc 关闭，不影响桥接和游戏。bridge.py 默认在 `127.0.0.1:24871`
+广播状态；不想开就加 `--hub-port 0`。
+
+iPad 上一直提示「PC 未连接」时：
+
+```
+python -m pymobiledevice3 usbmux list        :: 应能看到 iPad 的 UDID
+```
+
+- 列表为空 → USB 线/端口/信任问题，先解决连接；
+- 列表有设备，但 App 还是未连接 → 让 App 留在前台（后台会被挂起），
+  并确认 bridge.py 的 usbmux 转发没有报错。
+
+重新打包 exe：
+
+```
+pc\build_exe.bat
+```
+
+只有一个 exe，首次运行若被 SmartScreen 拦，点「更多信息 → 仍要运行」。
+
 没有真机时，先用假 iPad 验证协议这一半：
 
 ```
 python pc\sim_app.py          :: 终端 A
 python pc\bridge.py --serial none   :: 终端 B，会把触摸包打印成 SERIAL 28 ...
+python pc\panel_monitor.py    :: 终端 C，看到 34 区轮流亮
 ```
 
 ## 协议
@@ -66,6 +133,7 @@ python pc\bridge.py --serial none   :: 终端 B，会把触摸包打印成 SERIA
 
 - `type 0x01` 触摸：payload = 34 位区域掩码，5 字节小端
   （位序 A1..A8, B1..B8, C1, C2, D1..D8, E1..E8）
+- `type 0x04` 外键：payload = 1 字节，bit0..bit7 = 外键 1..8
 - `type 0x02/0x03` ping / pong
 - `type 0x10` 视频（后续阶段）
 
@@ -80,7 +148,7 @@ python pc\bridge.py --serial none   :: 终端 B，会把触摸包打印成 SERIA
 
 ## 命中判定
 
-`app/Sources/Resources/panel_mask.png` 是一张 1360×1360 的分区颜色图，
+`app/Sources/Resources/panel_mask.png` 是一张 1456×1456 的分区颜色图，
 每个区域一种唯一 RGB（取自 maimai-windows-touch-panel 的实测布局）。
 手指坐标直接查这张图，不需要手写几何，异形区域也准确。
 
