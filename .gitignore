@@ -1,0 +1,7 @@
+app/MaiPanel.xcodeproj/
+app/build/
+app/xcodebuild.log
+*.log
+*.ipa
+Payload/
+__pycache__/
