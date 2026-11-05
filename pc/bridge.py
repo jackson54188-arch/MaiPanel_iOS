@@ -469,7 +469,7 @@ class MonitorHub:
                     command = json.loads(line)
                 except ValueError:
                     continue
-                if command.get("cmd") == "tap" and self.on_command:
+                if isinstance(command, dict) and command.get("cmd") == "tap" and self.on_command:
                     self.on_command(str(command.get("key", "")))
         with self.lock:
             if client in self.clients:
