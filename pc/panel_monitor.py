@@ -44,6 +44,68 @@ BG = "#000000"
 TEXT = "#f2f2f2"
 DIM = "#8a8a8a"
 
+GAME_EXES = ("sinmai.exe",)
+
+
+def focus_game():
+    """Bring Sinmai to the foreground so injected keys land in the game.
+
+    Only reliable while our own window is active, which is exactly when a
+    cabinet button is clicked.
+    """
+    if sys.platform != "win32":
+        return False
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    query_limited = 0x1000
+
+    def process_name(pid):
+        handle = kernel32.OpenProcess(query_limited, False, pid)
+        if not handle:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(len(buf))
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                return buf.value.rsplit("\\", 1)[-1].lower()
+        finally:
+            kernel32.CloseHandle(handle)
+        return ""
+
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _param):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value and process_name(pid.value) in GAME_EXES:
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(visit, 0)
+    if not found:
+        return False
+    hwnd = found[0]
+    if user32.GetForegroundWindow() == hwnd:
+        return True
+    user32.SetForegroundWindow(hwnd)
+    return user32.GetForegroundWindow() == hwnd
+
 
 class PanelArt:
     """Monochrome disc: dark zone shapes on black, white when pressed."""
@@ -175,6 +237,18 @@ class HubClient(threading.Thread):
         self.running = True
         self.lock = threading.Lock()
         self.latest = None
+        self.sock = None
+
+    def send(self, payload):
+        with self.lock:
+            sock = self.sock
+        if sock is None:
+            return False
+        try:
+            sock.sendall((json.dumps(payload) + "\n").encode())
+            return True
+        except OSError:
+            return False
 
     def post(self, state):
         with self.lock:
@@ -195,6 +269,8 @@ class HubClient(threading.Thread):
                 time.sleep(1.0)
                 continue
             sock.settimeout(None)
+            with self.lock:
+                self.sock = sock
             self.post({"hub": True})
             buf = b""
             try:
@@ -216,6 +292,8 @@ class HubClient(threading.Thread):
             except OSError:
                 pass
             finally:
+                with self.lock:
+                    self.sock = None
                 try:
                     sock.close()
                 except OSError:
@@ -236,6 +314,7 @@ class MonitorApp:
         self.demo_index = 0
         self.demo_at = time.time()
         self.photo = None
+        self.notify_job = None
 
         root.title("MaiPanel 触摸板自检")
         root.configure(bg=BG)
@@ -271,6 +350,23 @@ class MonitorApp:
         self.hint = tk.Label(status, text="", bg=BG, fg=DIM, anchor="w", justify="left",
                              wraplength=art.size, font=("Microsoft YaHei UI", 9))
         self.hint.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        controls = tk.Frame(status, bg=BG)
+        controls.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        for column, (key, label) in enumerate(
+                (("test", "TEST"), ("service", "SERVICE"), ("coin", "投币"), ("select", "△ 三角"))):
+            controls.columnconfigure(column, weight=1)
+            tk.Button(
+                controls, text=label, command=lambda k=key, l=label: self._tap(k, l),
+                bg="#161616", fg=TEXT, activebackground="#2c2c2c", activeforeground=TEXT,
+                relief="flat", bd=0, highlightthickness=1,
+                highlightbackground="#333333", highlightcolor="#333333",
+                font=("Microsoft YaHei UI", 10, "bold"), cursor="hand2", pady=6,
+            ).grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
+
+        self.action_label = tk.Label(status, text="", bg=BG, fg=DIM, anchor="w",
+                                     font=("Microsoft YaHei UI", 9))
+        self.action_label.grid(row=8, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         root.bind("<Escape>", lambda _event: root.destroy())
         self._draw(0)
@@ -325,6 +421,32 @@ class MonitorApp:
         if not state.get("serial"):
             return "iPad 已连上，等待游戏接受手台：启动 Sinmai 后自动握手。"
         return "触摸数据实时同步中。"
+
+    def _tap(self, key, label):
+        """Ask the bridge to press a cabinet key; the game must own the focus."""
+        if not self.client:
+            self._notify("演示模式：按键不发送", bad=True)
+            return
+        focused = focus_game()
+        if focused:
+            time.sleep(0.05)
+        sent = self.client.send({"cmd": "tap", "key": key})
+        if not sent:
+            self._notify("桥接程序未运行", bad=True)
+        elif focused:
+            self._notify(f"已发送 {label}")
+        else:
+            self._notify(f"已发送 {label}（没找到 Sinmai 窗口，可能没有焦点）", bad=True)
+
+    def _notify(self, text, bad=False):
+        self.action_label.config(text=text, fg="#e8a33d" if bad else TEXT)
+        if self.notify_job is not None:
+            self.root.after_cancel(self.notify_job)
+        self.notify_job = self.root.after(1800, self._clear_notice)
+
+    def _clear_notice(self):
+        self.notify_job = None
+        self.action_label.config(text="", fg=DIM)
 
     def _poll(self):
         if self.demo:

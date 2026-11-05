@@ -90,6 +90,19 @@ python pc\panel_monitor.py --demo     :: 不连 bridge，自动轮流点亮 34 �
 界面是黑底白字的一个大圆盘：深灰分区 = 未按，纯白 + 光晕 = 正在按，
 激活区的编号变黑。下方是连接状态和当前掩码，没有任何弹窗。
 
+窗口底部还有一排机台功能键：`TEST`、`SERVICE`、`投币`、`△ 三角`。
+点一下会先把 Sinmai 切回前台，再让桥接按一次对应的键（约 90 ms）：
+
+| 按钮 | 注入按键 | 游戏侧配置 |
+| --- | --- | --- |
+| TEST | `1` | segatools `[io4] test=0x31`、AquaMai `Test = "Alpha1"` |
+| SERVICE | `8` | segatools `[io4] service=0x38` |
+| 投币 | `3` | segatools `[io4] coin=0x33` |
+| △ 三角 | `2` | AquaMai `Select_1P = "Alpha2"` |
+
+按键会打到前台窗口，所以点完按钮焦点会回到游戏；找不到 Sinmai.exe
+时按钮照样发命令，但状态栏会提示可能没有焦点。
+
 三行状态的含义：
 
 - `桥接程序` — bridge.py 在跑，并且监视端口连上了。
@@ -101,7 +114,9 @@ python pc\panel_monitor.py --demo     :: 不连 bridge，自动轮流点亮 34 �
   检查 USB 线、解锁 iPad、并让 App 保持在前台。
 
 窗口按 Esc 关闭，不影响桥接和游戏。bridge.py 默认在 `127.0.0.1:24871`
-广播状态；不想开就加 `--hub-port 0`。
+广播状态；不想开就加 `--hub-port 0`。这条连接是双向的：bridge 往下发
+状态 JSON，监视窗口往上发 `{"cmd": "tap", "key": "coin"}`
+（key 取 `test` / `service` / `coin` / `select`）。
 
 iPad 上一直提示「PC 未连接」时：
 

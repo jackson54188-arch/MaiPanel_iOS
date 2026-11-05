@@ -45,6 +45,11 @@ FRAME_BUTTONS = 0x04
 # Outer buttons 1..8 -> keyboard E D C X Z A Q W (virtual key codes).
 BUTTON_VKS = (0x45, 0x44, 0x43, 0x58, 0x5A, 0x41, 0x51, 0x57)
 
+# Cabinet operator keys, tapped from the monitor window. These match
+# segatools.ini [io4] (test/service/coin) and AquaMai Select_1P.
+SYSTEM_VKS = {"test": 0x31, "service": 0x38, "coin": 0x33, "select": 0x32}
+SYSTEM_LABELS = {"test": "TEST", "service": "SERVICE", "coin": "投币", "select": "三角"}
+
 if sys.platform == "win32":
     import ctypes
     from ctypes import wintypes
@@ -92,6 +97,7 @@ class KeyInjector:
     def __init__(self):
         self.mask = 0
         self.lock = threading.Lock()
+        self.tap_lock = threading.Lock()
         self.enabled = sys.platform == "win32"
         self._last_error = 0.0
         if not self.enabled:
@@ -113,6 +119,22 @@ class KeyInjector:
 
     def release_all(self):
         self.set_mask(0)
+
+    def tap(self, name, hold=0.09):
+        """Momentary press for TEST / SERVICE / COIN / select (triangle)."""
+        vk = SYSTEM_VKS.get(name)
+        if vk is None:
+            log(f"未知系统键: {name}")
+            return
+        label = SYSTEM_LABELS[name]
+        if not self.enabled:
+            log(f"非 Windows 环境, 不注入 {label}")
+            return
+        with self.tap_lock:
+            self._send(vk, True)
+            time.sleep(hold)
+            self._send(vk, False)
+        log(f"系统键 {label}")
 
     def _send(self, vk, down):
         if not self.enabled:
@@ -385,11 +407,16 @@ class AppLink:
 
 
 class MonitorHub:
-    """Broadcasts bridge state as JSON lines to the PC monitor window."""
+    """Broadcasts bridge state as JSON lines to the PC monitor window.
 
-    def __init__(self, host, port):
+    The monitor also writes commands back on the same socket, e.g.
+    {"cmd": "tap", "key": "coin"} for the cabinet buttons.
+    """
+
+    def __init__(self, host, port, on_command=None):
         self.host = host
         self.port = port
+        self.on_command = on_command
         self.clients = []
         self.lock = threading.Lock()
         self.running = True
@@ -421,7 +448,36 @@ class MonitorHub:
                     client.sendall(last)
                 except OSError:
                     pass
+            threading.Thread(target=self._reader, args=(client,), daemon=True).start()
             log("监视窗口已连接")
+
+    def _reader(self, client):
+        buf = b""
+        while self.running:
+            try:
+                chunk = client.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if not line.strip():
+                    continue
+                try:
+                    command = json.loads(line)
+                except ValueError:
+                    continue
+                if command.get("cmd") == "tap" and self.on_command:
+                    self.on_command(str(command.get("key", "")))
+        with self.lock:
+            if client in self.clients:
+                self.clients.remove(client)
+        try:
+            client.close()
+        except OSError:
+            pass
 
     def publish(self, state):
         line = (json.dumps(state, ensure_ascii=False) + "\n").encode()
@@ -502,7 +558,7 @@ def main():
     app_link.start()
     hub = None
     if args.hub_port:
-        hub = MonitorHub("127.0.0.1", args.hub_port)
+        hub = MonitorHub("127.0.0.1", args.hub_port, on_command=injector.tap)
         if hub.start():
             threading.Thread(target=status_loop, args=(hub, serial_link, app_link),
                              daemon=True).start()
