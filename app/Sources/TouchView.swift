@@ -105,7 +105,7 @@ final class OuterButtonPadView: UIView {
         }
     }
 
-    private var center: CGPoint = .zero
+    private var padCenter: CGPoint = .zero
     private var ringRadius: CGFloat = 0
     private var buttonRadius: CGFloat = 0
     private var lastSent: UInt8 = 0
@@ -116,7 +116,7 @@ final class OuterButtonPadView: UIView {
         .map { $0 * .pi / 180 }
 
     func update(center: CGPoint, ringRadius: CGFloat, buttonRadius: CGFloat) {
-        self.center = center
+        self.padCenter = center
         self.ringRadius = ringRadius
         self.buttonRadius = buttonRadius
         setNeedsDisplay()
@@ -125,8 +125,8 @@ final class OuterButtonPadView: UIView {
     func buttonCenter(_ index: Int) -> CGPoint {
         let angle = angles[index]
         return CGPoint(
-            x: center.x + cos(angle) * ringRadius,
-            y: center.y + sin(angle) * ringRadius
+            x: padCenter.x + cos(angle) * ringRadius,
+            y: padCenter.y + sin(angle) * ringRadius
         )
     }
 
