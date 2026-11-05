@@ -93,9 +93,9 @@ private extension CGFloat {
 
 struct ContentView: View {
     @StateObject private var model = PanelModel()
-    /// Panel diameter as a fraction of the shorter screen side. The rest of the
-    /// screen is reserved for the cabinet frame / LED ring.
-    private let panelScale: CGFloat = 0.78
+    /// Panel diameter as a fraction of the shorter screen side. The rest is
+    /// reserved for the arc-shaped cabinet buttons outside the disc.
+    private let panelScale: CGFloat = 0.72
 
     var body: some View {
         GeometryReader { geometry in
@@ -110,8 +110,7 @@ struct ContentView: View {
 
                 OuterButtonPad(
                     center: center,
-                    ringRadius: side * 0.575,
-                    buttonRadius: side * 0.047,
+                    panelRadius: side / 2,
                     pressed: model.buttons,
                     lights: model.showLights,
                     onChange: { model.handleButtons($0) }
