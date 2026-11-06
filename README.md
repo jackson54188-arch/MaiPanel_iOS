@@ -1,6 +1,6 @@
-# MaiPanel — iPad 虚拟手台（maimai DX）
+# MaiPanel_iOS — 虚拟手台（maimai DX）
 
-独立工程，和 Brokenithm / BeLikeithm 无关。iPad 上跑 34 区触摸面板，
+独立工程，iPad 上跑 34 区触摸面板，
 画面输出留在电脑上（本阶段无视频串流，声音也仍然走电脑）。
 
 ```
