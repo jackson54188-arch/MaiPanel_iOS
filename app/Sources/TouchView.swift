@@ -4,11 +4,11 @@ import UIKit
 /// Geometry shared by the ring drawing and the ring hit-test, so what is drawn
 /// is exactly what responds.
 enum OuterRing {
-    /// Squarish cabinet blocks, a little wider than a D zone: inner edge just
-    /// outside the disc, side length about 0.23 of the panel radius.
+    /// Squarish cabinet blocks, larger than a D zone and pushed out until the
+    /// ring almost touches the screen edge on the left and right.
     static let innerScale: CGFloat = 1.02
-    static let outerScale: CGFloat = 1.25
-    static let halfSpan: CGFloat = 5.8 * CGFloat.pi / 180
+    static let outerScale: CGFloat = 1.35
+    static let halfSpan: CGFloat = 7.5 * CGFloat.pi / 180
     /// Angular clearance between a button and the decorative filler beside it.
     static let gap: CGFloat = 2.0 * CGFloat.pi / 180
     /// Segment centres follow the A1...A8 zone angles: A1 top-right, clockwise.
@@ -217,7 +217,7 @@ final class OuterButtonRingView: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext(), panelRadius > 0 else { return }
-        let font = UIFont.monospacedDigitSystemFont(ofSize: max(10, thickness * 0.34), weight: .semibold)
+        let font = UIFont.monospacedDigitSystemFont(ofSize: max(12, thickness * 0.30), weight: .semibold)
         let midRadius = (innerRadius + outerRadius) / 2
 
         // The gaps between buttons are cabinet ring, not buttons: same arc
