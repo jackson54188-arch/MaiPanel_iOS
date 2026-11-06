@@ -128,7 +128,7 @@ final class MirrorImageView: UIView {
     /// Integer pixel rects, so a crop never lands on a half pixel (which would
     /// soften the edge) and the point-size placement below matches exactly.
     private static func stripRect(in image: CGImage) -> CGRect {
-        CGRect(x: 0, y: 0, width: image.width,
+        CGRect(x: 0, y: 0, width: CGFloat(image.width),
                height: (stripHeight * CGFloat(image.height)).rounded())
     }
 
