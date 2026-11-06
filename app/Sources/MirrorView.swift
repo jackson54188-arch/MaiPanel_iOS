@@ -72,7 +72,9 @@ final class VideoSink {
 final class MirrorImageView: UIView {
     /// Measured on the real screen, as fractions of the 9:16 game frame: the
     /// top strip ends at 21.1% and the round screen starts at 43.7%.
-    private static let stripHeight: CGFloat = 0.211
+    static let stripFraction: CGFloat = 0.211
+    /// Height over width of that strip crop, used to size the pink frame.
+    static let stripAspect: CGFloat = stripFraction * 16 / 9
     private static let discCenterX: CGFloat = 0.4984
     private static let discCenterY: CGFloat = 0.719
     private static let discRadius: CGFloat = 0.2815
@@ -80,6 +82,11 @@ final class MirrorImageView: UIView {
     private let stripLayer = CALayer()
     private let discLayer = CALayer()
     private var image: CGImage?
+    /// Where the strip and the 9:16 frame go, in this view's coordinates. The
+    /// strip is displayed wider than the 9:16 frame, so it cannot inherit the
+    /// frame's scale; each gets its own crop-to-target mapping.
+    private var stripTarget: CGRect = .zero
+    private var videoTarget: CGRect = .zero
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -96,6 +103,17 @@ final class MirrorImageView: UIView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func setTargets(strip: CGRect, video: CGRect, corner: CGFloat) {
+        stripTarget = strip
+        videoTarget = video
+        stripLayer.cornerRadius = corner
+        stripLayer.masksToBounds = corner > 0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        placeLayers()
+        CATransaction.commit()
     }
 
     func show(_ image: CGImage) {
@@ -117,19 +135,11 @@ final class MirrorImageView: UIView {
         CATransaction.commit()
     }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        placeLayers()
-        CATransaction.commit()
-    }
-
     /// Integer pixel rects, so a crop never lands on a half pixel (which would
     /// soften the edge) and the point-size placement below matches exactly.
     private static func stripRect(in image: CGImage) -> CGRect {
         CGRect(x: 0, y: 0, width: CGFloat(image.width),
-               height: (stripHeight * CGFloat(image.height)).rounded())
+               height: (stripFraction * CGFloat(image.height)).rounded())
     }
 
     /// The round screen square, clamped so it never runs past the bottom edge.
@@ -144,19 +154,18 @@ final class MirrorImageView: UIView {
     }
 
     private func placeLayers() {
-        guard let image = self.image, bounds.width > 0, bounds.height > 0 else { return }
-        let scaleX = bounds.width / CGFloat(image.width)
-        let scaleY = bounds.height / CGFloat(image.height)
-        stripLayer.frame = Self.stripRect(in: image).scaled(scaleX, scaleY)
-        let disc = Self.discRect(in: image).scaled(scaleX, scaleY)
-        discLayer.frame = disc
-        discLayer.cornerRadius = disc.width / 2
-    }
-}
-
-private extension CGRect {
-    func scaled(_ x: CGFloat, _ y: CGFloat) -> CGRect {
-        CGRect(x: origin.x * x, y: origin.y * y, width: width * x, height: height * y)
+        stripLayer.frame = stripTarget
+        guard let image, videoTarget.width > 0 else { return }
+        let scale = videoTarget.width / CGFloat(image.width)
+        let disc = Self.discRect(in: image)
+        let frame = CGRect(
+            x: videoTarget.minX + disc.minX * scale,
+            y: videoTarget.minY + disc.minY * scale,
+            width: disc.width * scale,
+            height: disc.height * scale
+        )
+        discLayer.frame = frame
+        discLayer.cornerRadius = frame.width / 2
     }
 }
 
@@ -167,11 +176,20 @@ private extension CGFloat {
 }
 
 struct MirrorView: UIViewRepresentable {
+    /// Strip and 9:16 frame rectangles, relative to the view's own bounds.
+    let strip: CGRect
+    let video: CGRect
+    /// Strip corner radius, matched to the inside of the pink frame.
+    let corner: CGFloat
+
     func makeUIView(context: Context) -> MirrorImageView {
         let view = MirrorImageView(frame: .zero)
         VideoSink.shared.attach(view)
+        view.setTargets(strip: strip, video: video, corner: corner)
         return view
     }
 
-    func updateUIView(_ view: MirrorImageView, context: Context) {}
+    func updateUIView(_ view: MirrorImageView, context: Context) {
+        view.setTargets(strip: strip, video: video, corner: corner)
+    }
 }

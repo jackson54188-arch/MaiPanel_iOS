@@ -164,9 +164,14 @@ struct ContentView: View {
     private let controlRowHeight: CGFloat = 50
     /// Distance from the top of the outer ring to the control row.
     private let controlRowGap: CGFloat = 14
-    private let menuPanelHeight: CGFloat = 158
+    private let menuPanelHeight: CGFloat = 200
+    /// Thin frame around the top picture, with an even gap on all four sides.
+    private let mirrorBorderWidth: CGFloat = 3
+    private let mirrorBorderGap: CGFloat = 2
 
     @State private var menuOpen = false
+    @AppStorage("mirrorFrameHex") private var mirrorFrameHex = "FF69B4"
+    @State private var frameColorText = ""
 
     var body: some View {
         GeometryReader { geometry in
@@ -199,11 +204,7 @@ struct ContentView: View {
                 .frame(width: size.width, height: size.height)
 
                 if model.showVideo {
-                    let rect = videoRect(center: center, radius: radius)
-                    MirrorView()
-                        .frame(width: rect.width, height: rect.height)
-                        .position(x: rect.midX, y: rect.midY)
-                        .allowsHitTesting(false)
+                    mirror(center: center, radius: radius)
                 }
 
                 panel(size: radius * 2)
@@ -249,7 +250,13 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = true
+            frameColorText = mirrorFrameHex
+        }
+        .onChange(of: frameColorText) { _ in
+            if let hex = validFrameHex { mirrorFrameHex = hex }
+        }
     }
 
     private func panel(size: CGFloat) -> some View {
@@ -334,6 +341,7 @@ struct ContentView: View {
                 panelChip("画面", isOn: model.showVideo) { model.showVideo.toggle() }
                 panelChip("范围 \(model.scopeLabel)", isOn: false) { model.cycleScope() }
             }
+            frameColorRow
             statusLines
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -362,6 +370,37 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
+    /// Hex code for the frame around the top picture, with a live swatch.
+    private var frameColorRow: some View {
+        HStack(spacing: 8) {
+            Text("边框")
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(controlTint)
+            TextField("FF69B4", text: $frameColorText)
+                .textInputAutocapitalization(.characters)
+                .autocorrectionDisabled()
+                .keyboardType(.asciiCapable)
+                .multilineTextAlignment(.center)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(controlTint)
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .background(controlFill, in: Capsule())
+                .onSubmit {
+                    if let hex = validFrameHex {
+                        frameColorText = hex
+                        mirrorFrameHex = hex
+                    }
+                }
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(frameColor)
+                .frame(width: 34, height: 24)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                )
+        }
+    }
+
     private func panelKey(_ title: String, key: String) -> some View {
         Button {
             model.tapSystem(key)
@@ -387,6 +426,72 @@ struct ContentView: View {
                 .foregroundStyle(isOn ? Color.black : controlTint)
         }
         .buttonStyle(.plain)
+    }
+
+    /// The top strip stretched to the cabinet's width — the vertical line
+    /// through the upper outer corner of keys 2 and 7 — plus the round play
+    /// area under the touch disc, with a thin frame around the strip. Both
+    /// pieces come from the same 9:16 frame at different scales.
+    private struct MirrorLayout {
+        var stroke: CGRect
+        var bounds: CGRect
+        var strip: CGRect
+        var video: CGRect
+        var corner: CGFloat
+        var innerCorner: CGFloat
+    }
+
+    private func mirrorLayout(center: CGPoint, radius: CGFloat) -> MirrorLayout {
+        let video = videoRect(center: center, radius: radius)
+        // Key 2 sits at 22.1° above the horizontal and is half a span wide, so
+        // its upper outer corner is halfSpan + 22.1° away from +x.
+        let halfWidth = OuterRing.outerRadius(radius) * cos(OuterRing.halfSpan + 22.1 * .pi / 180)
+        let inset = mirrorBorderWidth + mirrorBorderGap
+        let stripWidth = halfWidth * 2 - inset * 2
+        let stroke = CGRect(
+            x: center.x - halfWidth,
+            y: video.minY - inset,
+            width: halfWidth * 2,
+            height: stripWidth * MirrorImageView.stripAspect + inset * 2
+        )
+        let strip = stroke.insetBy(dx: inset, dy: inset)
+        let bounds = video.union(stroke)
+        let corner = max(10, radius * 0.06)
+        return MirrorLayout(
+            stroke: stroke,
+            bounds: bounds,
+            strip: strip.offsetBy(dx: -bounds.minX, dy: -bounds.minY),
+            video: video.offsetBy(dx: -bounds.minX, dy: -bounds.minY),
+            corner: corner,
+            innerCorner: max(0, corner - inset)
+        )
+    }
+
+    private func mirror(center: CGPoint, radius: CGFloat) -> some View {
+        let layout = mirrorLayout(center: center, radius: radius)
+        return ZStack {
+            MirrorView(strip: layout.strip, video: layout.video, corner: layout.innerCorner)
+                .frame(width: layout.bounds.width, height: layout.bounds.height)
+                .position(x: layout.bounds.midX, y: layout.bounds.midY)
+            RoundedRectangle(cornerRadius: layout.corner, style: .continuous)
+                .strokeBorder(frameColor, lineWidth: mirrorBorderWidth)
+                .frame(width: layout.stroke.width, height: layout.stroke.height)
+                .position(x: layout.stroke.midX, y: layout.stroke.midY)
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var frameColor: Color {
+        Color(hex: mirrorFrameHex) ?? .pink
+    }
+
+    /// Normalised only when the text is a usable hex colour, so a half-typed
+    /// code leaves the frame at its last good colour.
+    private var validFrameHex: String? {
+        var text = frameColorText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if text.hasPrefix("#") { text.removeFirst() }
+        guard text.count == 6 || text.count == 8, UInt64(text, radix: 16) != nil else { return nil }
+        return text
     }
 
     /// The mirrored 9:16 frame placed so the game's circle lands exactly under
@@ -441,6 +546,23 @@ struct ContentView: View {
             ? "无"
             : model.pressedButtons.map(String.init).joined(separator: " ")
         return "触摸: \(zones) · 外键: \(buttons)"
+    }
+}
+
+extension Color {
+    /// "RRGGBB" or "AARRGGBB", with an optional leading #.
+    init?(hex: String) {
+        var text = hex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if text.hasPrefix("#") { text.removeFirst() }
+        guard text.count == 6 || text.count == 8,
+              let value = UInt64(text, radix: 16) else { return nil }
+        self.init(
+            .sRGB,
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255,
+            opacity: text.count == 8 ? Double((value >> 24) & 0xFF) / 255 : 1
+        )
     }
 }
 
