@@ -287,23 +287,36 @@ final class OuterButtonRingView: UIView {
             path.stroke()
         }
 
-        // Cabinet circle/body LEDs sit just inside the disc edge.
-        if lights && ledValid {
-            let level = max(circleLevel, bodyLevel)
-            if level > 0.02 {
-                let base = 0.08 + 0.50 * level
-                for step in stride(from: 4, through: 1, by: -1) {
-                    let radius = panelRadius - panelRadius * 0.007 * CGFloat(step)
-                    let alpha = base * CGFloat(5 - step) / 4 * 0.45
-                    context.setStrokeColor(UIColor.white.withAlphaComponent(alpha).cgColor)
-                    context.setLineWidth(max(1.5, panelRadius * 0.009))
-                    context.strokeEllipse(in: CGRect(
-                        x: padCenter.x - radius,
-                        y: padCenter.y - radius,
-                        width: radius * 2,
-                        height: radius * 2
-                    ))
-                }
+        // Body LEDs are the cabinet shell, so they light the area outside the
+        // ring rather than the disc rim. Capped at 70% white so a full-on
+        // effect reads as backlight instead of a solid white page.
+        if lights && ledValid && bodyLevel > 0.02 {
+            let shell = UIBezierPath(rect: bounds)
+            shell.append(UIBezierPath(ovalIn: CGRect(
+                x: padCenter.x - outerRadius,
+                y: padCenter.y - outerRadius,
+                width: outerRadius * 2,
+                height: outerRadius * 2
+            )))
+            shell.usesEvenOddFillRule = true
+            context.setFillColor(UIColor.white.withAlphaComponent(0.7 * bodyLevel).cgColor)
+            shell.fill()
+        }
+
+        // The circle LED is the rim of the round screen, just inside the disc.
+        if lights && ledValid && circleLevel > 0.02 {
+            let base = 0.08 + 0.50 * circleLevel
+            for step in stride(from: 4, through: 1, by: -1) {
+                let radius = panelRadius - panelRadius * 0.007 * CGFloat(step)
+                let alpha = base * CGFloat(5 - step) / 4 * 0.45
+                context.setStrokeColor(UIColor.white.withAlphaComponent(alpha).cgColor)
+                context.setLineWidth(max(1.5, panelRadius * 0.009))
+                context.strokeEllipse(in: CGRect(
+                    x: padCenter.x - radius,
+                    y: padCenter.y - radius,
+                    width: radius * 2,
+                    height: radius * 2
+                ))
             }
         }
 
