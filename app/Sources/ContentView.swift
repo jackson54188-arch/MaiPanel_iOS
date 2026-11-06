@@ -417,17 +417,33 @@ struct ContentView: View {
 
     private var statusLines: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("\(model.connected ? "PC 已连接" : "PC 未连接") · 端口 \(panelServicePort) · 灯光 \(model.led.valid ? "游戏" : "无") · 画面 \(model.showVideo ? "开" : "关")")
-            Text((model.zones.isEmpty ? "触摸: 无" : "触摸: " + model.zones.sorted().joined(separator: " "))
-                 + " · 外键: " + (model.pressedButtons.isEmpty
-                                  ? "无"
-                                  : model.pressedButtons.map(String.init).joined(separator: " ")))
+            Text(connectionLine)
+            Text(touchLine)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
         }
         .font(.system(size: 11, weight: .medium, design: .monospaced))
         .foregroundStyle(controlTint.opacity(0.8))
         .allowsHitTesting(false)
+    }
+
+    // Built as plain strings: one long interpolation inside a Text made the
+    // whole-module Release build time out.
+    private var connectionLine: String {
+        let pc = model.connected ? "PC 已连接" : "PC 未连接"
+        let led = model.led.valid ? "游戏" : "无"
+        let video = model.showVideo ? "开" : "关"
+        return "\(pc) · 端口 \(panelServicePort) · 灯光 \(led) · 画面 \(video)"
+    }
+
+    private var touchLine: String {
+        let zones = model.zones.isEmpty
+            ? "无"
+            : model.zones.sorted().joined(separator: " ")
+        let buttons = model.pressedButtons.isEmpty
+            ? "无"
+            : model.pressedButtons.map(String.init).joined(separator: " ")
+        return "触摸: \(zones) · 外键: \(buttons)"
     }
 }
 
