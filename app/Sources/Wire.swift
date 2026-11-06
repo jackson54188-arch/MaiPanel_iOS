@@ -18,7 +18,27 @@ enum FrameType: UInt8 {
     case pong = 0x03
     case buttons = 0x04
     case system = 0x05
+    case led = 0x06
     case video = 0x10
+}
+
+/// Game LED state relayed from the PC mod: 8 button colours plus the cabinet
+/// body/circle/side brightness bytes.
+struct LedSnapshot: Equatable {
+    let valid: Bool
+    let colors: [UInt8]  // 24 bytes, RGB per button 1...8
+    let body: UInt8
+    let circle: UInt8
+    let side: UInt8
+
+    init?(payload: [UInt8]) {
+        guard payload.count >= 28 else { return nil }
+        valid = payload[0] & 1 != 0
+        colors = Array(payload[1..<25])
+        body = payload[25]
+        circle = payload[26]
+        side = payload[27]
+    }
 }
 
 /// Momentary cabinet keys; the ids are mirrored by pc/bridge.py.

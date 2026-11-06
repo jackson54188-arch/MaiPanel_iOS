@@ -331,7 +331,8 @@ class MonitorApp:
                      row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
         self.rows = {}
-        specs = (("hub", "桥接程序"), ("serial", "游戏串口"), ("app", "iPad 面板"))
+        specs = (("hub", "桥接程序"), ("serial", "游戏串口"), ("app", "iPad 面板"),
+                 ("led", "游戏灯光"))
         for row, (key, label) in enumerate(specs, start=1):
             tk.Label(status, text=label, bg=BG, fg=DIM, anchor="w",
                      font=("Microsoft YaHei UI", 10)).grid(row=row, column=0, sticky="w", pady=1)
@@ -342,17 +343,17 @@ class MonitorApp:
 
         self.mask_label = tk.Label(status, text="MASK 0x0000000000", bg=BG, fg=TEXT,
                                    font=("Consolas", 10), anchor="w")
-        self.mask_label.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.mask_label.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.zone_label = tk.Label(status, text="—", bg=BG, fg=DIM, anchor="w",
                                    justify="left", wraplength=art.size,
                                    font=("Consolas", 10))
-        self.zone_label.grid(row=5, column=0, columnspan=2, sticky="w")
+        self.zone_label.grid(row=6, column=0, columnspan=2, sticky="w")
         self.hint = tk.Label(status, text="", bg=BG, fg=DIM, anchor="w", justify="left",
                              wraplength=art.size, font=("Microsoft YaHei UI", 9))
-        self.hint.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.hint.grid(row=7, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         controls = tk.Frame(status, bg=BG)
-        controls.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        controls.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         for column, (key, label) in enumerate(
                 (("test", "TEST"), ("service", "SERVICE"), ("coin", "投币"), ("select", "△ 三角"))):
             controls.columnconfigure(column, weight=1)
@@ -366,7 +367,7 @@ class MonitorApp:
 
         self.action_label = tk.Label(status, text="", bg=BG, fg=DIM, anchor="w",
                                      font=("Microsoft YaHei UI", 9))
-        self.action_label.grid(row=8, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.action_label.grid(row=9, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         root.bind("<Escape>", lambda _event: root.destroy())
         self._draw(0)
@@ -400,6 +401,9 @@ class MonitorApp:
         else:
             app_text = "等待 iPad"
         self.rows["app"].config(text=app_text, fg=TEXT if app else DIM)
+        led = bool(state.get("led"))
+        self.rows["led"].config(text="已收到" if led else "无数据",
+                                fg=TEXT if led else DIM)
 
         zones = state.get("zones") or []
         self.zone_label.config(text=" ".join(zones) if zones else "—",

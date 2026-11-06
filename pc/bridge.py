@@ -41,6 +41,14 @@ FRAME_PING = 0x02
 FRAME_PONG = 0x03
 FRAME_BUTTONS = 0x04
 FRAME_SYSTEM = 0x05
+FRAME_LED = 0x06
+
+# pc/ledmod/MaiPanelLed.cs sends 33-byte datagrams; forward the 28 bytes the
+# iPad needs (flags, 8 x RGB, body/circle/side brightness).
+LED_MAGIC = b"MPL1"
+LED_PORT = 24872
+LED_UDP_SIZE = 33
+LED_PAYLOAD_SIZE = 28
 
 # Payload id from the iPad's system-key frame -> SYSTEM_VKS name.
 SYSTEM_FRAME_KEYS = {1: "test", 2: "service", 3: "coin", 4: "select"}
@@ -339,6 +347,7 @@ class AppLink:
         self.last_frame = 0.0
         self.last_connect = 0.0
         self.last_connect_log = 0.0
+        self.send_lock = threading.Lock()
 
     @property
     def forward_up(self):
@@ -419,7 +428,75 @@ class AppLink:
                     if key:
                         self.on_system(key)
                 elif frame_type == FRAME_PING:
-                    sock.sendall(FRAME_MAGIC + bytes([1, FRAME_PONG, 0, 0]))
+                    self.send_frame(FRAME_PONG, b"")
+
+    def send_frame(self, frame_type, payload):
+        """Queue one frame for the iPad; safe to call from any thread."""
+        with self.send_lock:
+            sock = self.sock
+            if sock is None or not self.connected:
+                return False
+            header = FRAME_MAGIC + bytes([1, frame_type]) + struct.pack("<H", len(payload))
+            try:
+                sock.sendall(header + payload)
+                return True
+            except OSError:
+                return False
+
+    def send_led(self, payload):
+        return self.send_frame(FRAME_LED, payload)
+
+
+class LedLink:
+    """Receives LED snapshots from the MelonLoader mod over loopback UDP."""
+
+    def __init__(self, port, app_link):
+        self.port = port
+        self.app_link = app_link
+        self.running = True
+        self.sock = None
+        self.last_rx = 0.0
+        self.reported = False
+
+    def start(self):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", self.port))
+            sock.settimeout(0.25)
+        except OSError as error:
+            log(f"灯光端口 {self.port} 打不开: {error}")
+            return False
+        self.sock = sock
+        threading.Thread(target=self._loop, daemon=True).start()
+        log(f"等待游戏灯光 127.0.0.1:{self.port}")
+        return True
+
+    @property
+    def alive(self):
+        return time.time() - self.last_rx < 2.0
+
+    def _loop(self):
+        while self.running:
+            try:
+                data, _ = self.sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            if len(data) != LED_UDP_SIZE or data[:4] != LED_MAGIC:
+                continue
+            if not self.reported:
+                self.reported = True
+                log("已收到游戏灯光数据")
+            self.last_rx = time.time()
+            self.app_link.send_led(data[5:5 + LED_PAYLOAD_SIZE])
+
+    def close(self):
+        self.running = False
+        try:
+            self.sock.close()
+        except (OSError, AttributeError):
+            pass
 
 
 class MonitorHub:
@@ -527,7 +604,7 @@ class MonitorHub:
             self.clients.clear()
 
 
-def status_loop(hub, serial_link, app_link):
+def status_loop(hub, serial_link, app_link, led_link):
     last = None
     while hub.running:
         mask = serial_link.mask
@@ -538,6 +615,7 @@ def status_loop(hub, serial_link, app_link):
             "app_tcp": bool(app_link.forward_up),
             "zones": zone_names(mask),
             "buttons": app_link.buttons,
+            "led": bool(led_link and led_link.alive),
         }
         if state != last:
             hub.publish(state)
@@ -566,6 +644,8 @@ def main():
     parser.add_argument("--udid", default=None, help="多台设备时指定 iPad 的 UDID")
     parser.add_argument("--hub-port", type=int, default=24871,
                         help="监视窗口端口, 0 = 不广播")
+    parser.add_argument("--led-port", type=int, default=LED_PORT,
+                        help="游戏灯光 UDP 端口, 0 = 不接收")
     args = parser.parse_args()
 
     forward = start_forward(args.port, args.port, args.udid) if args.usb else None
@@ -581,11 +661,16 @@ def main():
                        system_tap)
     serial_link.start()
     app_link.start()
+    led_link = None
+    if args.led_port:
+        led_link = LedLink(args.led_port, app_link)
+        if not led_link.start():
+            led_link = None
     hub = None
     if args.hub_port:
         hub = MonitorHub("127.0.0.1", args.hub_port, on_command=injector.tap)
         if hub.start():
-            threading.Thread(target=status_loop, args=(hub, serial_link, app_link),
+            threading.Thread(target=status_loop, args=(hub, serial_link, app_link, led_link),
                              daemon=True).start()
         else:
             hub = None
@@ -613,6 +698,8 @@ def main():
         app_link.running = False
         injector.release_all()
         serial_link.close()
+        if led_link:
+            led_link.close()
         if hub:
             hub.close()
         if forward:

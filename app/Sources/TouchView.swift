@@ -140,6 +140,11 @@ struct OuterButtonRing: UIViewRepresentable {
     let panelRadius: CGFloat
     let pressed: UInt8
     let lights: Bool
+    let ledValid: Bool
+    let ledColors: [UIColor]
+    let circleLevel: CGFloat
+    let bodyLevel: CGFloat
+    let sideLevel: CGFloat
 
     func makeUIView(context: Context) -> OuterButtonRingView {
         let view = OuterButtonRingView()
@@ -149,6 +154,11 @@ struct OuterButtonRing: UIViewRepresentable {
         view.update(center: center, panelRadius: panelRadius)
         view.pressed = pressed
         view.lights = lights
+        view.ledValid = ledValid
+        view.ledColors = ledColors
+        view.circleLevel = circleLevel
+        view.bodyLevel = bodyLevel
+        view.sideLevel = sideLevel
         return view
     }
 
@@ -156,6 +166,11 @@ struct OuterButtonRing: UIViewRepresentable {
         view.update(center: center, panelRadius: panelRadius)
         view.pressed = pressed
         view.lights = lights
+        view.ledValid = ledValid
+        view.ledColors = ledColors
+        view.circleLevel = circleLevel
+        view.bodyLevel = bodyLevel
+        view.sideLevel = sideLevel
     }
 }
 
@@ -168,6 +183,29 @@ final class OuterButtonRingView: UIView {
     var lights = true {
         didSet {
             if lights != oldValue { setNeedsDisplay() }
+        }
+    }
+    var ledValid = false {
+        didSet {
+            if ledValid != oldValue { setNeedsDisplay() }
+        }
+    }
+    var ledColors: [UIColor] = Array(repeating: .white, count: 8) {
+        didSet { setNeedsDisplay() }
+    }
+    var circleLevel: CGFloat = 0 {
+        didSet {
+            if circleLevel != oldValue { setNeedsDisplay() }
+        }
+    }
+    var bodyLevel: CGFloat = 0 {
+        didSet {
+            if bodyLevel != oldValue { setNeedsDisplay() }
+        }
+    }
+    var sideLevel: CGFloat = 0 {
+        didSet {
+            if sideLevel != oldValue { setNeedsDisplay() }
         }
     }
 
@@ -215,59 +253,127 @@ final class OuterButtonRingView: UIView {
         segmentPath(center: OuterRing.angles[index], half: OuterRing.halfSpan + anglePad, grow: grow)
     }
 
+    private func luminance(_ color: UIColor) -> CGFloat {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return 0.299 * red + 0.587 * green + 0.114 * blue
+    }
+
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext(), panelRadius > 0 else { return }
         let font = UIFont.monospacedDigitSystemFont(ofSize: max(12, thickness * 0.30), weight: .semibold)
         let midRadius = (innerRadius + outerRadius) / 2
 
         // The gaps between buttons are cabinet ring, not buttons: same arc
-        // trapezoids but flat and dimmer, and they ignore touches.
+        // trapezoids but flat and dimmer, and they ignore touches. The game's
+        // side brightness drives them when LED data is present.
         for index in OuterRing.angles.indices {
             let slot = OuterRing.fillerSpan(index)
             guard slot.half > 0 else { continue }
             let path = segmentPath(center: slot.center, half: slot.half)
-            context.setFillColor(UIColor.white.withAlphaComponent(lights ? 0.18 : 0.05).cgColor)
+            let fill: CGFloat
+            if lights && ledValid {
+                fill = 0.10 + 0.35 * sideLevel
+            } else {
+                fill = lights ? 0.18 : 0.05
+            }
+            context.setFillColor(UIColor.white.withAlphaComponent(fill).cgColor)
             path.fill()
             context.setStrokeColor(UIColor.white.withAlphaComponent(lights ? 0.42 : 0.18).cgColor)
             context.setLineWidth(max(1, thickness * 0.05))
             path.stroke()
         }
 
+        // Cabinet circle/body LEDs sit just inside the disc edge.
+        if lights && ledValid {
+            let level = max(circleLevel, bodyLevel)
+            if level > 0.02 {
+                let base = 0.08 + 0.50 * level
+                for step in stride(from: 4, through: 1, by: -1) {
+                    let radius = panelRadius - panelRadius * 0.007 * CGFloat(step)
+                    let alpha = base * CGFloat(5 - step) / 4 * 0.45
+                    context.setStrokeColor(UIColor.white.withAlphaComponent(alpha).cgColor)
+                    context.setLineWidth(max(1.5, panelRadius * 0.009))
+                    context.strokeEllipse(in: CGRect(
+                        x: padCenter.x - radius,
+                        y: padCenter.y - radius,
+                        width: radius * 2,
+                        height: radius * 2
+                    ))
+                }
+            }
+        }
+
         for index in 0..<8 {
             let on = (pressed & UInt8(1 << index)) != 0
             let path = buttonPath(index)
+            let gameColor: UIColor? = ledValid && index < ledColors.count ? ledColors[index] : nil
+            let dark = gameColor.map { luminance($0) < 0.10 } ?? false
 
             if lights {
                 // Backlight halo: four arc segments of falling alpha growing
                 // outward and sideways, so the glow follows the segment shape.
-                let base = on ? 0.10 : 0.04
+                let base: CGFloat = on ? 0.16 : (gameColor == nil ? 0.04 : 0.06)
+                let halo = gameColor ?? UIColor.white
                 for step in stride(from: 4, through: 1, by: -1) {
                     let grow = thickness * 0.35 * CGFloat(step) / 4
                     let pad = OuterRing.halfSpan * 0.12 * CGFloat(step) / 4
                     let alpha = base * CGFloat(5 - step) / 4
-                    context.setFillColor(UIColor.white.withAlphaComponent(alpha).cgColor)
+                    context.setFillColor(halo.withAlphaComponent(alpha).cgColor)
                     buttonPath(index, grow: grow, anglePad: pad).fill()
                 }
-                // Frosted acrylic body: white, semi-transparent when idle.
-                context.setFillColor(
-                    (on ? UIColor.white : UIColor.white.withAlphaComponent(0.30)).cgColor
-                )
-                path.fill()
-                context.setStrokeColor(UIColor.white.withAlphaComponent(on ? 1.0 : 0.60).cgColor)
+
+                if let gameColor {
+                    if dark {
+                        // An unlit LED still needs a visible cabinet button.
+                        context.setFillColor(
+                            UIColor.white.withAlphaComponent(on ? 0.55 : 0.12).cgColor
+                        )
+                        context.setStrokeColor(
+                            UIColor.white.withAlphaComponent(on ? 0.95 : 0.35).cgColor
+                        )
+                    } else {
+                        context.setFillColor(
+                            gameColor.withAlphaComponent(on ? 1.0 : 0.75).cgColor
+                        )
+                        context.setStrokeColor(
+                            UIColor.white.withAlphaComponent(on ? 1.0 : 0.45).cgColor
+                        )
+                    }
+                } else {
+                    // Frosted acrylic body: white, semi-transparent when idle.
+                    context.setFillColor(
+                        (on ? UIColor.white : UIColor.white.withAlphaComponent(0.30)).cgColor
+                    )
+                    context.setStrokeColor(UIColor.white.withAlphaComponent(on ? 1.0 : 0.60).cgColor)
+                }
             } else {
                 context.setFillColor(
                     (on ? UIColor.white.withAlphaComponent(0.85) : UIColor.clear).cgColor
                 )
-                path.fill()
                 context.setStrokeColor(UIColor.white.withAlphaComponent(on ? 0.9 : 0.30).cgColor)
             }
+            path.fill()
             context.setLineWidth(max(1, thickness * 0.07))
             path.stroke()
 
+            let labelColor: UIColor
+            if lights, let gameColor {
+                if dark {
+                    labelColor = on ? .black : UIColor.white.withAlphaComponent(0.85)
+                } else {
+                    labelColor = luminance(gameColor) > 0.55 ? .black : .white
+                }
+            } else {
+                labelColor = on ? .black : UIColor.white.withAlphaComponent(0.85)
+            }
             let text = "\(index + 1)" as NSString
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: on ? UIColor.black : UIColor.white.withAlphaComponent(0.85),
+                .foregroundColor: labelColor,
             ]
             let size = text.size(withAttributes: attributes)
             let anchor = point(radius: midRadius, angle: OuterRing.angles[index])

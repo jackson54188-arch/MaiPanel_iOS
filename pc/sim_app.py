@@ -5,6 +5,7 @@ without the device or a build.
     python bridge.py --serial none
 """
 
+import math
 import socket
 import struct
 import sys
@@ -12,7 +13,8 @@ import threading
 import time
 
 from bridge import (
-    FRAME_BUTTONS, FRAME_MAGIC, FRAME_PING, FRAME_SYSTEM, FRAME_TOUCH, ZONES, log,
+    FRAME_BUTTONS, FRAME_LED, FRAME_MAGIC, FRAME_PING, FRAME_SYSTEM, FRAME_TOUCH,
+    LED_MAGIC, LED_PORT, ZONES, log,
 )
 
 
@@ -32,8 +34,55 @@ def send_system(conn, key_id):
     conn.sendall(frame(FRAME_SYSTEM, bytes([key_id])))
 
 
+def read_frames(conn):
+    """Logs frames coming back from the bridge (LED relay)."""
+    buf = bytearray()
+    while True:
+        try:
+            data = conn.recv(4096)
+        except OSError:
+            return
+        if not data:
+            return
+        buf += data
+        while len(buf) >= 8:
+            if bytes(buf[:4]) != FRAME_MAGIC:
+                del buf[:1]
+                continue
+            length = struct.unpack_from("<H", buf, 6)[0]
+            if len(buf) < 8 + length:
+                break
+            frame_type = buf[5]
+            payload = bytes(buf[8:8 + length])
+            del buf[:8 + length]
+            if frame_type == FRAME_LED and len(payload) >= 28:
+                colors = ["%02x%02x%02x" % tuple(payload[1 + i * 3:4 + i * 3]) for i in range(8)]
+                log(f"LED valid={payload[0] & 1} {' '.join(colors)} "
+                    f"b/c/s={payload[25]}/{payload[26]}/{payload[27]}")
+
+
+def led_demo():
+    """Sends fake mod datagrams so the app can be tested without the game."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    phase = 0.0
+    while True:
+        colors = []
+        for index in range(8):
+            angle = phase + index * 0.7
+            colors.extend([
+                int((math.sin(angle) + 1) * 127.5),
+                int((math.sin(angle + 2.1) + 1) * 127.5),
+                int((math.sin(angle + 4.2) + 1) * 127.5),
+            ])
+        payload = bytes([1, 1] + colors + [200, 120, 60])
+        sock.sendto(LED_MAGIC + payload, ("127.0.0.1", LED_PORT))
+        phase += 0.15
+        time.sleep(1 / 30)
+
+
 def session(conn):
     log("bridge 已连接")
+    threading.Thread(target=read_frames, args=(conn,), daemon=True).start()
     try:
         for index in range(len(ZONES)):
             send_mask(conn, 1 << index)
@@ -61,7 +110,11 @@ def session(conn):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 24870
+    positional = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    port = int(positional[0]) if positional else 24870
+    if "--led" in sys.argv:
+        threading.Thread(target=led_demo, daemon=True).start()
+        log(f"模拟灯光每 33ms 发往 127.0.0.1:{LED_PORT}")
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("0.0.0.0", port))

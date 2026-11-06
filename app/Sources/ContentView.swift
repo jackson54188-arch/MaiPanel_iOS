@@ -1,12 +1,23 @@
 import SwiftUI
 import UIKit
 
+/// Everything the ring needs in one published value, so a 30 Hz LED stream
+/// only triggers one SwiftUI update per frame.
+struct LedRenderState {
+    var valid = false
+    var colors: [UIColor] = Array(repeating: .white, count: 8)
+    var body: CGFloat = 0
+    var circle: CGFloat = 0
+    var side: CGFloat = 0
+}
+
 @MainActor
 final class PanelModel: ObservableObject {
     @Published private(set) var zones: Set<String> = []
     @Published private(set) var fingers: [CGPoint] = []
     @Published private(set) var connected = false
     @Published private(set) var buttons: UInt8 = 0
+    @Published private(set) var led = LedRenderState()
 
     @Published var mirrored = false
     @Published var rotated = false
@@ -28,6 +39,7 @@ final class PanelModel: ObservableObject {
     let mask: ZoneMask?
     let zoneCenters: [String: CGPoint]
     private let server = PanelServer()
+    private var lastLed: LedSnapshot?
 
     init() {
         let maskURL = Bundle.main.url(forResource: "panel_mask", withExtension: "png")
@@ -38,7 +50,13 @@ final class PanelModel: ObservableObject {
             Task { @MainActor in self?.connected = true }
         }
         server.onDisconnected = { [weak self] in
-            Task { @MainActor in self?.connected = false }
+            Task { @MainActor in
+                self?.connected = false
+                self?.led.valid = false
+            }
+        }
+        server.onLed = { [weak self] snapshot in
+            Task { @MainActor in self?.applyLed(snapshot) }
         }
         server.start()
     }
@@ -72,6 +90,25 @@ final class PanelModel: ObservableObject {
     func tapSystem(_ key: String) {
         guard let key = SystemKey(rawValue: key) else { return }
         server.sendSystem(key)
+    }
+
+    private func applyLed(_ snapshot: LedSnapshot) {
+        guard snapshot != lastLed else { return }
+        lastLed = snapshot
+        led = LedRenderState(
+            valid: snapshot.valid,
+            colors: stride(from: 0, to: snapshot.colors.count, by: 3).map { index in
+                UIColor(
+                    red: CGFloat(snapshot.colors[index]) / 255,
+                    green: CGFloat(snapshot.colors[index + 1]) / 255,
+                    blue: CGFloat(snapshot.colors[index + 2]) / 255,
+                    alpha: 1
+                )
+            },
+            body: CGFloat(snapshot.body) / 255,
+            circle: CGFloat(snapshot.circle) / 255,
+            side: CGFloat(snapshot.side) / 255
+        )
     }
 
     private static func loadCenters() -> [String: CGPoint] {
@@ -125,7 +162,12 @@ struct ContentView: View {
                     center: center,
                     panelRadius: side / 2,
                     pressed: model.buttons,
-                    lights: model.showLights
+                    lights: model.showLights,
+                    ledValid: model.led.valid,
+                    ledColors: model.led.colors,
+                    circleLevel: model.led.circle,
+                    bodyLevel: model.led.body,
+                    sideLevel: model.led.side
                 )
                 .frame(width: width, height: height)
 
@@ -218,6 +260,7 @@ struct ContentView: View {
             Text(model.connected ? "PC 已连接" : "PC 未连接")
                 .foregroundStyle(model.connected ? Color.green : Color.orange)
             Text("端口 \(panelServicePort)")
+            Text(model.led.valid ? "灯光: 游戏" : "灯光: 无")
             Text(model.zones.isEmpty ? "触摸: 无" : "触摸: " + model.zones.sorted().joined(separator: " "))
             Text(model.pressedButtons.isEmpty
                  ? "外键: 无"

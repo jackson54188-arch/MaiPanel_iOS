@@ -13,6 +13,7 @@ final class PanelServer {
 
     var onConnected: (() -> Void)?
     var onDisconnected: (() -> Void)?
+    var onLed: ((LedSnapshot) -> Void)?
 
     func start(port: UInt16 = panelServicePort) {
         queue.async { [weak self] in
@@ -112,7 +113,8 @@ final class PanelServer {
 
     /// TCP may split or coalesce frames, so keep a byte buffer and cut frames
     /// by their length field instead of assuming one callback equals one frame.
-    /// Video frames land here once streaming exists; for now only pings are expected.
+    /// Pings and game LED frames arrive here; video frames land here once
+    /// streaming exists.
     private func handleIncoming(_ data: Data) {
         inbox.append(contentsOf: data)
         while inbox.count >= 8 {
@@ -127,9 +129,14 @@ final class PanelServer {
             }
             guard inbox.count >= 8 + length else { return }
             let type = inbox[5]
+            let payload = Array(inbox[8..<(8 + length)])
             inbox.removeFirst(8 + length)
             if type == FrameType.ping.rawValue, let connection = self.connection {
                 send(encodeFrame(.pong, Data()), on: connection)
+            } else if type == FrameType.led.rawValue, let snapshot = LedSnapshot(payload: payload) {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onLed?(snapshot)
+                }
             }
         }
     }
