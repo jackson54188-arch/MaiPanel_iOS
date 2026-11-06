@@ -355,7 +355,8 @@ class MonitorApp:
         controls = tk.Frame(status, bg=BG)
         controls.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         for column, (key, label) in enumerate(
-                (("test", "TEST"), ("service", "SERVICE"), ("coin", "投币"), ("select", "△ 三角"))):
+                (("test", "TEST"), ("service", "SERVICE"), ("coin", "投币"),
+                 ("select", "△ 三角"), ("card", "刷卡"))):
             controls.columnconfigure(column, weight=1)
             tk.Button(
                 controls, text=label, command=lambda k=key, l=label: self._tap(k, l),

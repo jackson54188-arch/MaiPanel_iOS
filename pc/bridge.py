@@ -51,15 +51,21 @@ LED_UDP_SIZE = 33
 LED_PAYLOAD_SIZE = 28
 
 # Payload id from the iPad's system-key frame -> SYSTEM_VKS name.
-SYSTEM_FRAME_KEYS = {1: "test", 2: "service", 3: "coin", 4: "select"}
+SYSTEM_FRAME_KEYS = {1: "test", 2: "service", 3: "coin", 4: "select", 5: "card"}
 
 # Outer buttons 1..8 -> keyboard E D C X Z A Q W (virtual key codes).
 BUTTON_VKS = (0x45, 0x44, 0x43, 0x58, 0x5A, 0x41, 0x51, 0x57)
 
 # Cabinet operator keys, tapped from the monitor window. These match
 # segatools.ini [io4] (test/service/coin) and AquaMai Select_1P.
-SYSTEM_VKS = {"test": 0x31, "service": 0x38, "coin": 0x33, "select": 0x32}
-SYSTEM_LABELS = {"test": "TEST", "service": "SERVICE", "coin": "投币", "select": "三角"}
+SYSTEM_VKS = {"test": 0x31, "service": 0x38, "coin": 0x33, "select": 0x32,
+              "card": 0x0D}
+SYSTEM_LABELS = {"test": "TEST", "service": "SERVICE", "coin": "投币", "select": "三角",
+                 "card": "刷卡"}
+
+# aimeio presents its virtual card only while Enter is held down, so the card
+# key needs a much longer press than the other keys.
+SYSTEM_HOLDS = {"card": 1.2}
 
 if sys.platform == "win32":
     import ctypes
@@ -131,8 +137,8 @@ class KeyInjector:
     def release_all(self):
         self.set_mask(0)
 
-    def tap(self, name, hold=0.09):
-        """Momentary press for TEST / SERVICE / COIN / select (triangle)."""
+    def tap(self, name, hold=None):
+        """Momentary press for TEST / SERVICE / COIN / select (triangle) / card."""
         vk = SYSTEM_VKS.get(name)
         if vk is None:
             log(f"未知系统键: {name}")
@@ -141,6 +147,8 @@ class KeyInjector:
         if not self.enabled:
             log(f"非 Windows 环境, 不注入 {label}")
             return
+        if hold is None:
+            hold = SYSTEM_HOLDS.get(name, 0.09)
         with self.tap_lock:
             self._send(vk, True)
             time.sleep(hold)

@@ -133,34 +133,46 @@ private extension CGFloat {
 
 struct ContentView: View {
     @StateObject private var model = PanelModel()
-    /// Panel diameter as a fraction of the shorter side of the pad area (the
-    /// screen minus the name plate and control bar strips).
-    private let panelScale: CGFloat = 0.72
-    /// Top strip kept clear for the cabinet's name plate, so the pad sits low
-    /// like the real screen instead of being centred.
-    private let namePlateFraction: CGFloat = 0.17
-    /// Bottom strip reserved for the control bar, so the enlarged buttons never
-    /// cover the outermost zones.
-    private let controlBarHeight: CGFloat = 56
+
+    /// The game is a 9:16 portrait picture: a menu rectangle on top and the
+    /// play disc pinned to the bottom edge. On a 2:3 iPad that frame is fitted
+    /// by height, so its width sets how large the disc may get.
+    private let gameAspect: CGFloat = 9.0 / 16.0
+    /// Clearance between the outer ring and the screen edge.
+    private let screenMargin: CGFloat = 6
+    private let controlRowHeight: CGFloat = 50
+    /// Distance from the top of the outer ring to the control row.
+    private let controlRowGap: CGFloat = 14
+    private let menuPanelHeight: CGFloat = 116
+
+    @State private var menuOpen = false
 
     var body: some View {
         GeometryReader { geometry in
-            let width = geometry.size.width
-            let height = geometry.size.height
-            let top = max(84, height * namePlateFraction)
-            let padArea = max(0, height - top - controlBarHeight)
-            let side = min(width, padArea) * panelScale
-            let center = CGPoint(x: width / 2, y: top + padArea / 2)
+            let size = geometry.size
+            let gameWidth = min(size.width, size.height * gameAspect)
+            // The ring is the widest element, so it decides the disc radius;
+            // the ring's bottom edge is what sits screenMargin above the
+            // bottom, which leaves the disc itself a small gap above it.
+            let radius = min(
+                gameWidth * 0.485,
+                (size.width / 2 - screenMargin) / OuterRing.outerScale
+            )
+            let ringOuter = radius * OuterRing.outerScale
+            let center = CGPoint(x: size.width / 2, y: size.height - screenMargin - ringOuter)
+            let rowBottom = center.y - ringOuter - controlRowGap
+            let rowWidth = min(size.width - 24, 460)
+
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                panel(size: side)
-                    .frame(width: side, height: side)
+                panel(size: radius * 2)
+                    .frame(width: radius * 2, height: radius * 2)
                     .position(center)
 
                 OuterButtonRing(
                     center: center,
-                    panelRadius: side / 2,
+                    panelRadius: radius,
                     pressed: model.buttons,
                     lights: model.showLights,
                     ledValid: model.led.valid,
@@ -169,21 +181,29 @@ struct ContentView: View {
                     bodyLevel: model.led.body,
                     sideLevel: model.led.side
                 )
-                .frame(width: width, height: height)
+                .frame(width: size.width, height: size.height)
 
-                PanelTouchOverlay(center: center, panelRadius: side / 2) { points, buttons in
+                PanelTouchOverlay(center: center, panelRadius: radius) { points, buttons in
                     model.handleTouch(points)
                     model.handleButtons(buttons)
                 }
-                .frame(width: width, height: height)
+                .frame(width: size.width, height: size.height)
+
+                if menuOpen {
+                    menuPanel
+                        .frame(width: rowWidth, height: menuPanelHeight)
+                        .position(
+                            x: size.width / 2,
+                            y: rowBottom - controlRowHeight - 8 - menuPanelHeight / 2
+                        )
+                }
+
+                controlRow(width: rowWidth)
+                    .frame(width: rowWidth, height: controlRowHeight)
+                    .position(x: size.width / 2, y: rowBottom - controlRowHeight / 2)
             }
             .overlay(alignment: .topLeading) {
                 status.padding(14)
-            }
-            .overlay(alignment: .bottomLeading) {
-                controlBar
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 10)
             }
         }
         .statusBarHidden(true)
@@ -221,24 +241,51 @@ struct ContentView: View {
         }
     }
 
-    /// Cabinet keys and pad options share one bottom bar so every control is
-    /// the same size and sits where the thumbs already are.
-    private var controlBar: some View {
-        HStack(spacing: 8) {
-            systemKey("TEST", key: "test")
-            systemKey("SERVICE", key: "service")
-            systemKey("投币", key: "coin")
-            systemKey("△ 三角", key: "select")
-            Rectangle()
-                .fill(Color.white.opacity(0.18))
-                .frame(width: 1, height: 22)
-                .padding(.horizontal, 4)
-            chip("镜像", isOn: model.mirrored) { model.mirrored.toggle() }
-            chip("旋转", isOn: model.rotated) { model.rotated.toggle() }
-            chip("编号", isOn: model.showLabels) { model.showLabels.toggle() }
-            chip("灯光", isOn: model.showLights) { model.showLights.toggle() }
-            chip("范围 \(model.scopeLabel)", isOn: false) { model.cycleScope() }
+    /// Only the three keys used mid-credit keep a permanent button; everything
+    /// else, including the setup toggles, lives one tap deeper in 菜单.
+    private func controlRow(width: CGFloat) -> some View {
+        HStack(spacing: 10) {
+            systemKey("三角", key: "select")
+            systemKey("刷卡", key: "card")
+            Button {
+                menuOpen.toggle()
+            } label: {
+                Text("菜单")
+                    .font(.system(size: 18, weight: .semibold, design: .monospaced))
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .background(
+                        (menuOpen ? Color.white.opacity(0.85) : Color.white.opacity(0.12)),
+                        in: Capsule()
+                    )
+                    .foregroundStyle(menuOpen ? Color.black : Color.white.opacity(0.9))
+            }
+            .buttonStyle(.plain)
         }
+        .frame(width: width)
+    }
+
+    private var menuPanel: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                panelKey("TEST", key: "test")
+                panelKey("SERVICE", key: "service")
+                panelKey("投币", key: "coin")
+            }
+            HStack(spacing: 8) {
+                panelChip("镜像", isOn: model.mirrored) { model.mirrored.toggle() }
+                panelChip("旋转", isOn: model.rotated) { model.rotated.toggle() }
+                panelChip("编号", isOn: model.showLabels) { model.showLabels.toggle() }
+                panelChip("灯光", isOn: model.showLights) { model.showLights.toggle() }
+                panelChip("范围 \(model.scopeLabel)", isOn: false) { model.cycleScope() }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
     }
 
     private func systemKey(_ title: String, key: String) -> some View {
@@ -246,11 +293,37 @@ struct ContentView: View {
             model.tapSystem(key)
         } label: {
             Text(title)
-                .font(.system(size: 14, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .font(.system(size: 18, weight: .semibold, design: .monospaced))
+                .frame(maxWidth: .infinity, minHeight: 50)
                 .background(Color.white.opacity(0.12), in: Capsule())
-                .foregroundStyle(Color.white.opacity(0.8))
+                .foregroundStyle(Color.white.opacity(0.9))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func panelKey(_ title: String, key: String) -> some View {
+        Button {
+            model.tapSystem(key)
+        } label: {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(Color.white.opacity(0.12), in: Capsule())
+                .foregroundStyle(Color.white.opacity(0.9))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func panelChip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .background(
+                    (isOn ? Color.white.opacity(0.85) : Color.white.opacity(0.12)),
+                    in: Capsule()
+                )
+                .foregroundStyle(isOn ? Color.black : Color.white.opacity(0.85))
         }
         .buttonStyle(.plain)
     }
@@ -269,18 +342,6 @@ struct ContentView: View {
         .font(.system(size: 12, weight: .medium, design: .monospaced))
         .foregroundStyle(Color.white.opacity(0.75))
         .allowsHitTesting(false)
-    }
-
-    private func chip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 14, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(isOn ? Color.white.opacity(0.85) : Color.white.opacity(0.12), in: Capsule())
-                .foregroundStyle(isOn ? Color.black : Color.white.opacity(0.8))
-        }
-        .buttonStyle(.plain)
     }
 }
 

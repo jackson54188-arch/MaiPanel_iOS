@@ -47,6 +47,7 @@ enum SystemKey: String {
     case service
     case coin
     case select
+    case card
 
     var id: UInt8 {
         switch self {
@@ -54,6 +55,7 @@ enum SystemKey: String {
         case .service: return 2
         case .coin: return 3
         case .select: return 4
+        case .card: return 5
         }
     }
 }
