@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # MaiPanel
 
 把 iPad 当成 maimai DX 的触摸手台。iPad 上是一整块 34 区圆盘，圆盘外侧
@@ -12,3 +13,7 @@
 外键 1–8 对应键盘 `E D C X Z A Q W`。
 
 另一个 32 区工程（Brokenithm-Evolved-iOS）与本工程无关。
+=======
+nothing there
+（暂时的）
+>>>>>>> 0b885b464bef5c678c96fdcbf2986075dc56123b
