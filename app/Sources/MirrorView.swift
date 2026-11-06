@@ -49,6 +49,8 @@ final class VideoSink {
             let view = target
             lock.unlock()
             guard let data else { return }
+            // Nothing to show it on (mirror off, view not built yet).
+            guard view != nil else { continue }
             guard let image = Self.decode(data) else { continue }
             DispatchQueue.main.async {
                 view?.show(image)
@@ -142,7 +144,7 @@ final class MirrorImageView: UIView {
     }
 
     private func placeLayers() {
-        guard let image, bounds.width > 0, bounds.height > 0 else { return }
+        guard let image = self.image, bounds.width > 0, bounds.height > 0 else { return }
         let scaleX = bounds.width / CGFloat(image.width)
         let scaleY = bounds.height / CGFloat(image.height)
         stripLayer.frame = Self.stripRect(in: image).scaled(scaleX, scaleY)
@@ -166,7 +168,7 @@ private extension CGFloat {
 
 struct MirrorView: UIViewRepresentable {
     func makeUIView(context: Context) -> MirrorImageView {
-        let view = MirrorImageView()
+        let view = MirrorImageView(frame: .zero)
         VideoSink.shared.attach(view)
         return view
     }
