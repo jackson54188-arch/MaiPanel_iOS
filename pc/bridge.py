@@ -375,6 +375,9 @@ class AppLink:
             except OSError:
                 time.sleep(1)
                 continue
+            # Video frames are tiny but back-to-back; without this the round
+            # trip picks up a 40 ms Nagle/delayed-ACK stall.
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.sock = sock
             self.linked = True
             self.last_connect = time.time()
@@ -443,9 +446,17 @@ class AppLink:
                 elif frame_type == FRAME_PING:
                     self.send_frame(FRAME_PONG, b"")
 
-    def send_frame(self, frame_type, payload):
-        """Queue one frame for the iPad; safe to call from any thread."""
-        with self.send_lock:
+    def send_frame(self, frame_type, payload, wait=None):
+        """Queue one frame for the iPad; safe to call from any thread.
+
+        `wait` lets the video thread give up instead of queueing behind the
+        touch frames: a mirrored frame is worthless once it is late.
+        """
+        if wait is None:
+            self.send_lock.acquire()
+        elif not self.send_lock.acquire(timeout=wait):
+            return False
+        try:
             sock = self.sock
             if sock is None or not self.connected:
                 return False
@@ -455,6 +466,8 @@ class AppLink:
                 return True
             except OSError:
                 return False
+        finally:
+            self.send_lock.release()
 
     def send_led(self, payload):
         return self.send_frame(FRAME_LED, payload)
@@ -519,7 +532,7 @@ class VideoLink:
     is actually linked; otherwise the capture thread stays idle.
     """
 
-    def __init__(self, app_link, max_width=432, fps=8, quality=55):
+    def __init__(self, app_link, max_width=0, fps=60, quality=55):
         self.app_link = app_link
         self.max_width = max_width
         self.interval = 1.0 / max(1, fps)
@@ -528,6 +541,7 @@ class VideoLink:
         self.running = True
         self.capture = None
         self.frames = 0
+        self.dropped = 0
 
     def start(self):
         try:
@@ -552,22 +566,34 @@ class VideoLink:
         log("iPad 画面镜像 " + ("开" if on else "关"))
 
     def _loop(self):
+        deadline = time.perf_counter()
         while self.running:
             if not self.enabled or not self.app_link.connected:
-                time.sleep(0.1)
+                time.sleep(0.05)
+                deadline = time.perf_counter()
                 continue
-            started = time.time()
             data = self.capture.grab()
-            if data is not None and self.app_link.send_frame(FRAME_VIDEO, data):
-                self.frames += 1
-                if self.frames == 1:
-                    log(f"画面已开始推流 ({len(data)} 字节/帧)")
-            delay = self.interval - (time.time() - started)
+            if data is not None:
+                if self.app_link.send_frame(FRAME_VIDEO, data, wait=0.01):
+                    self.frames += 1
+                    if self.frames == 1:
+                        log(f"画面已开始推流 ({len(data)} 字节/帧, "
+                            f"{1 / self.interval:.0f} fps)")
+                else:
+                    self.dropped += 1
+            # Keep a fixed pace: sleeping the remainder keeps the stream at
+            # fps without letting a slow frame shift every later one.
+            deadline += self.interval
+            delay = deadline - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
+            else:
+                deadline = time.perf_counter()
 
     def close(self):
         self.running = False
+        if self.capture is not None:
+            self.capture.close()
 
 
 class MonitorHub:
@@ -719,8 +745,10 @@ def main():
                         help="监视窗口端口, 0 = 不广播")
     parser.add_argument("--led-port", type=int, default=LED_PORT,
                         help="游戏灯光 UDP 端口, 0 = 不接收")
-    parser.add_argument("--video-width", type=int, default=432,
-                        help="镜像到 iPad 的画面宽度, 0 = 不启动")
+    parser.add_argument("--video-width", type=int, default=0,
+                        help="镜像到 iPad 的画面宽度, 0 = 游戏窗口原分辨率")
+    parser.add_argument("--video-fps", type=int, default=60,
+                        help="画面帧率, 0 = 不启动画面镜像")
     args = parser.parse_args()
 
     forward = start_forward(args.port, args.port, args.udid) if args.usb else None
@@ -743,9 +771,10 @@ def main():
                        system_tap, on_control=control)
     serial_link.start()
     app_link.start()
-    video_link = VideoLink(app_link, max_width=args.video_width)
-    if not video_link.start():
-        video_link = None
+    if args.video_fps:
+        video_link = VideoLink(app_link, max_width=args.video_width, fps=args.video_fps)
+        if not video_link.start():
+            video_link = None
     led_link = None
     if args.led_port:
         led_link = LedLink(args.led_port, app_link)

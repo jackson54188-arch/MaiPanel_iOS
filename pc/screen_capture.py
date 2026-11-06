@@ -1,11 +1,12 @@
 """Grabs the game window and turns it into small JPEG frames for the iPad.
 
-Only Pillow is used. The window is located by process name (Sinmai.exe), so the
-result does not depend on the window title or on where the window sits.
-The client area is cropped to 9:16 and scaled down; frames stay far below the
-65535 byte limit of the MPNL length field.
+The fast path is the Desktop Duplication API (dxcam): the composited frame is
+already on the GPU, so one grab costs well under a millisecond instead of the
+16 ms a screen DC read stalls on. OpenCV then resizes and encodes in about
+3 ms. GDI StretchBlt and Pillow ImageGrab stay as fallbacks.
 
-    python screen_capture.py --save probe.jpg     # one probe capture
+    python screen_capture.py --save probe.jpg       # one probe capture
+    python screen_capture.py --exe sinmai.exe       # benchmark the game window
 """
 
 import argparse
@@ -17,11 +18,27 @@ from ctypes import wintypes
 
 from PIL import Image, ImageGrab
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - fallbacks below still work
+    np = None
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    import dxcam
+except ImportError:
+    dxcam = None
+
 GAME_EXE = "sinmai.exe"
 ASPECT = 9.0 / 16.0
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
 
 def _dpi_aware():
@@ -64,6 +81,27 @@ class _POINT(ctypes.Structure):
     _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
 
 
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = [
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = [("bmiHeader", _BITMAPINFOHEADER),
+                ("bmiColors", wintypes.DWORD * 3)]
+
+
 kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
 kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
 kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W))
@@ -71,6 +109,24 @@ kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_PROCESSENTR
 kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
 user32.EnumWindows.argtypes = (ctypes.WINFUNCTYPE(
     wintypes.BOOL, wintypes.HWND, wintypes.LPARAM), wintypes.LPARAM)
+user32.GetDC.restype = wintypes.HDC
+user32.GetDC.argtypes = (wintypes.HWND,)
+user32.ReleaseDC.argtypes = (wintypes.HWND, wintypes.HDC)
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.CreateCompatibleDC.argtypes = (wintypes.HDC,)
+gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+gdi32.CreateDIBSection.argtypes = (
+    wintypes.HDC, ctypes.POINTER(_BITMAPINFO), wintypes.UINT,
+    ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD)
+gdi32.SelectObject.argtypes = (wintypes.HDC, wintypes.HGDIOBJ)
+gdi32.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
+gdi32.DeleteDC.argtypes = (wintypes.HDC,)
+gdi32.StretchBlt.argtypes = (
+    wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+    wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.DWORD)
+gdi32.SetStretchBltMode.argtypes = (wintypes.HDC, ctypes.c_int)
+gdi32.SetBrushOrgEx.argtypes = (wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                                ctypes.POINTER(_POINT))
 
 
 def pids_of(exe_name):
@@ -114,7 +170,8 @@ def find_game_window(exe_name=GAME_EXE):
             best.append((width * height, hwnd))
         return True
 
-    user32.EnumWindows(ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(visit), 0)
+    user32.EnumWindows(
+        ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)(visit), 0)
     return max(best)[1] if best else None
 
 
@@ -133,22 +190,90 @@ def client_box(hwnd):
     return (origin.x, origin.y, origin.x + width, origin.y + height)
 
 
-def crop_aspect(image, aspect=ASPECT):
-    """Center-crop to the game's portrait aspect, dropping letterbox bars."""
-    width, height = image.size
-    if abs(width / height - aspect) < 0.005:
-        return image
-    if width / height > aspect:
-        new_width = int(round(height * aspect))
-        left = (width - new_width) // 2
-        return image.crop((left, 0, left + new_width, height))
-    new_height = int(round(width / aspect))
-    top = (height - new_height) // 2
-    return image.crop((0, top, width, top + new_height))
+def crop_9_16(box):
+    """Center-crop a screen box to the game's portrait aspect."""
+    left, top, right, bottom = box
+    width = right - left
+    height = bottom - top
+    if width / height > ASPECT:
+        new_width = int(round(height * ASPECT))
+        left += (width - new_width) // 2
+        width = new_width
+    else:
+        new_height = int(round(width / ASPECT))
+        top += (height - new_height) // 2
+        height = new_height
+    return (left, top, left + width, top + height)
+
+
+class FastGrabber:
+    """StretchBlt from the screen straight into a DIB at the output size."""
+
+    SRCCOPY = 0x00CC0020
+    HALFTONE = 4
+    COLORONCOLOR = 3
+
+    def __init__(self, width, height, smooth=True):
+        self.width = width
+        self.height = height
+        self.ok = False
+        self.screen_dc = user32.GetDC(None)
+        self.mem_dc = gdi32.CreateCompatibleDC(self.screen_dc)
+        header = _BITMAPINFOHEADER()
+        header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        header.biWidth = width
+        header.biHeight = -height  # top-down rows, so no vertical flip later
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = 0  # BI_RGB
+        info = _BITMAPINFO()
+        info.bmiHeader = header
+        self.bits = ctypes.c_void_p()
+        self.bitmap = gdi32.CreateDIBSection(
+            self.mem_dc, ctypes.byref(info), 0, ctypes.byref(self.bits), None, 0)
+        if not self.bitmap:
+            return
+        gdi32.SelectObject(self.mem_dc, self.bitmap)
+        gdi32.SetStretchBltMode(self.mem_dc, self.HALFTONE if smooth else self.COLORONCOLOR)
+        gdi32.SetBrushOrgEx(self.mem_dc, 0, 0, None)
+        self.ok = bool(self.screen_dc and self.mem_dc and self.bits)
+
+    def grab(self, box):
+        """PIL image of the cropped box, or None if GDI refused."""
+        if not self.ok:
+            return None
+        left, top, right, bottom = crop_9_16(box)
+        if right <= left or bottom <= top:
+            return None
+        if not gdi32.StretchBlt(self.mem_dc, 0, 0, self.width, self.height,
+                                self.screen_dc, left, top, right - left, bottom - top,
+                                self.SRCCOPY):
+            return None
+        data = ctypes.string_at(self.bits, self.width * self.height * 4)
+        return Image.frombuffer("RGB", (self.width, self.height), data,
+                                "raw", "BGRX", 0, 1)
+
+    def close(self):
+        try:
+            if self.bitmap:
+                gdi32.DeleteObject(self.bitmap)
+            if self.mem_dc:
+                gdi32.DeleteDC(self.mem_dc)
+            if self.screen_dc:
+                user32.ReleaseDC(None, self.screen_dc)
+        except Exception:
+            pass
+        self.ok = False
 
 
 class GameCapture:
-    def __init__(self, max_width=432, quality=55, exe_name=GAME_EXE, log=None):
+    """Turns the game window into JPEG frames at most `max_width` wide.
+
+    `max_width` of 0 keeps the window's own resolution: the portrait game strip
+    is only ~608 px wide on a 1080p monitor, so upscaling would just cost bytes.
+    """
+
+    def __init__(self, max_width=0, quality=55, exe_name=GAME_EXE, log=None):
         self.max_width = max_width
         self.quality = quality
         self.exe_name = exe_name
@@ -157,6 +282,22 @@ class GameCapture:
         self.window_found = False
         self.misses = 0
         self._last_warn = 0.0
+        self._target = None
+        self._gdi = None
+        self._gdi_failed = False
+        self.camera = None
+        self._open_camera()
+
+    def _open_camera(self):
+        if dxcam is None or np is None:
+            self.log("没有 dxcam, 退回 GDI 抓屏")
+            return False
+        try:
+            self.camera = dxcam.create(output_color="BGR")
+        except Exception as error:
+            self.log(f"桌面复制不可用 ({error}), 退回 GDI 抓屏")
+            self.camera = None
+        return self.camera is not None
 
     def _warn(self, text):
         if time.time() - self._last_warn > 5:
@@ -170,8 +311,51 @@ class GameCapture:
         self.window_found = self.hwnd is not None
         return self.hwnd
 
+    def _target_size(self, crop):
+        width = crop[2] - crop[0]
+        if self.max_width and width > self.max_width:
+            width = self.max_width
+        width -= width % 2
+        height = int(round(width / ASPECT))
+        height -= height % 2
+        return max(2, width), max(2, height)
+
+    def _gdi_image(self, box, size):
+        if self._gdi_failed:
+            return None
+        if self._gdi is None or (self._gdi.width, self._gdi.height) != size:
+            if self._gdi is not None:
+                self._gdi.close()
+            self._gdi = FastGrabber(*size)
+            if not self._gdi.ok:
+                self._gdi_failed = True
+                self.log("GDI 抓屏不可用, 退回 Pillow")
+                return None
+        return self._gdi.grab(box)
+
+    def _slow_image(self, box, size):
+        image = ImageGrab.grab(bbox=box, all_screens=True).convert("RGB")
+        left, top, right, bottom = crop_9_16((0, 0, image.width, image.height))
+        image = image.crop((left, top, right, bottom))
+        return image.resize(size, Image.BILINEAR)
+
+    def _encode(self, image, size):
+        quality = self.quality
+        while True:
+            if cv2 is not None and np is not None and isinstance(image, np.ndarray):
+                ok, buffer = cv2.imencode(
+                    ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+                data = buffer.tobytes() if ok else b""
+            else:
+                buffer = io.BytesIO()
+                image.save(buffer, "JPEG", quality=quality, optimize=False)
+                data = buffer.getvalue()
+            if len(data) <= 60000 or quality <= 25:
+                return data if data and len(data) <= 65000 else None
+            quality -= 10
+
     def grab(self):
-        """One JPEG frame, or None while the game window is unavailable."""
+        """One JPEG frame, or None when nothing new is on screen right now."""
         hwnd = self._window()
         if not hwnd:
             self.misses += 1
@@ -182,33 +366,54 @@ class GameCapture:
             self.misses += 1
             self._warn("游戏窗口最小化或太小")
             return None
-        try:
-            image = ImageGrab.grab(bbox=box, all_screens=True)
-        except Exception as error:
-            self.misses += 1
-            self._warn(f"抓屏失败: {error}")
-            return None
-        image = crop_aspect(image.convert("RGB"))
-        width = min(self.max_width, image.width)
-        height = max(1, int(round(width / ASPECT)))
-        image = image.resize((width, height), Image.BILINEAR)
 
-        quality = self.quality
-        while True:
-            buffer = io.BytesIO()
-            image.save(buffer, "JPEG", quality=quality, optimize=False)
-            data = buffer.getvalue()
-            if len(data) <= 60000 or quality <= 25:
-                break
-            quality -= 10
-        return data if len(data) <= 65000 else None
+        crop = crop_9_16(box)
+        size = self._target_size(crop)
+        if self._target != size:
+            self._target = size
+
+        if self.camera is not None:
+            try:
+                # Returns None when the desktop has not changed since the last
+                # grab; the iPad then simply keeps the frame it already has.
+                frame = self.camera.grab(region=crop)
+            except Exception as error:
+                self.log(f"桌面复制抓帧失败 ({error}), 退回 GDI 抓屏")
+                self.camera = None
+                frame = None
+            if frame is not None:
+                if cv2 is not None and tuple(frame.shape[1::-1]) != size:
+                    frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+                elif cv2 is None:
+                    return self._encode(self._slow_from_array(frame, size), size)
+                return self._encode(frame, size)
+            if self.camera is not None:
+                return None
+        image = self._gdi_image(box, size) or self._slow_image(box, size)
+        return self._encode(image, size)
+
+    @staticmethod
+    def _slow_from_array(frame, size):
+        return Image.fromarray(frame[:, :, ::-1]).resize(size, Image.BILINEAR)
+
+    def close(self):
+        if self._gdi is not None:
+            self._gdi.close()
+            self._gdi = None
+        camera, self.camera = self.camera, None
+        if camera is not None:
+            try:
+                camera.stop()
+            except Exception:
+                pass
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", default=GAME_EXE)
     parser.add_argument("--save", default=None, help="把一帧存成 JPEG 方便检查")
-    parser.add_argument("--width", type=int, default=432)
+    parser.add_argument("--width", type=int, default=0, help="0 = 窗口原分辨率")
+    parser.add_argument("--quality", type=int, default=68)
     args = parser.parse_args()
 
     hwnd = find_game_window(args.exe)
@@ -216,16 +421,27 @@ def main():
         print(f"没有找到 {args.exe} 的可见窗口")
         return 1
     print(f"窗口句柄 {hwnd} 客户区 {client_box(hwnd)}")
-    if args.save:
-        capture = GameCapture(max_width=args.width, exe_name=args.exe,
-                              log=lambda text: print(text))
-        data = capture.grab()
-        if not data:
-            print("抓屏失败")
-            return 1
+    capture = GameCapture(max_width=args.width, quality=args.quality,
+                          exe_name=args.exe, log=lambda text: print(text))
+
+    # The desktop duplicator only hands out frames when something moved, so
+    # keep a frame around and only time the ones that really arrived.
+    data = None
+    found = 0
+    started = time.perf_counter()
+    for _ in range(60):
+        got = capture.grab()
+        if got is not None:
+            data = got
+            found += 1
+    spent = time.perf_counter() - started
+    print(f"{found}/60 帧有新画面, {spent * 1000 / 60:.1f} ms/次, "
+          f"每帧 {len(data) if data else 0} 字节")
+
+    if args.save and data:
         with open(args.save, "wb") as handle:
             handle.write(data)
-        print(f"已保存 {args.save} ({len(data)} 字节)")
+        print(f"已保存 {args.save}")
     return 0
 
 

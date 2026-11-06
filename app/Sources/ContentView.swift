@@ -18,7 +18,6 @@ final class PanelModel: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var buttons: UInt8 = 0
     @Published private(set) var led = LedRenderState()
-    @Published private(set) var videoFrame: UIImage?
 
     @Published var mirrored = false
     @Published var rotated = false
@@ -27,7 +26,7 @@ final class PanelModel: ObservableObject {
     @Published var showVideo = false {
         didSet {
             server.sendVideoControl(showVideo)
-            if !showVideo { videoFrame = nil }
+            if !showVideo { VideoSink.shared.clear() }
         }
     }
     @Published private(set) var scopeIndex = 1
@@ -64,14 +63,14 @@ final class PanelModel: ObservableObject {
             Task { @MainActor in
                 self?.connected = false
                 self?.led.valid = false
-                self?.videoFrame = nil
+                VideoSink.shared.clear()
             }
         }
         server.onLed = { [weak self] snapshot in
             Task { @MainActor in self?.applyLed(snapshot) }
         }
-        server.onVideo = { [weak self] image in
-            Task { @MainActor in self?.videoFrame = image }
+        server.onVideo = { data in
+            VideoSink.shared.push(data)
         }
         server.start()
     }
@@ -199,11 +198,9 @@ struct ContentView: View {
                 )
                 .frame(width: size.width, height: size.height)
 
-                if model.showVideo, let frame = model.videoFrame {
+                if model.showVideo {
                     let rect = videoRect(center: center, radius: radius)
-                    Image(uiImage: frame)
-                        .resizable()
-                        .interpolation(.medium)
+                    MirrorView()
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
                         .allowsHitTesting(false)

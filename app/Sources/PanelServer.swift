@@ -1,6 +1,5 @@
 import Foundation
 import Network
-import UIKit
 
 /// TCP server the PC bridge dials through its usbmux forwarder (pc/forward.py).
 final class PanelServer {
@@ -15,13 +14,17 @@ final class PanelServer {
     var onConnected: (() -> Void)?
     var onDisconnected: (() -> Void)?
     var onLed: ((LedSnapshot) -> Void)?
-    var onVideo: ((UIImage) -> Void)?
+    var onVideo: ((Data) -> Void)?
 
     func start(port: UInt16 = panelServicePort) {
         queue.async { [weak self] in
             guard let self else { return }
             do {
-                let parameters = NWParameters.tcp
+                let tcp = NWProtocolTCP.Options()
+                // Video frames are small and back to back; Nagle would stall
+                // each one for a full round trip.
+                tcp.noDelay = true
+                let parameters = NWParameters(tls: nil, tcp: tcp)
                 parameters.allowLocalEndpointReuse = true
                 let listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
                 listener.newConnectionHandler = { [weak self] connection in
@@ -146,11 +149,10 @@ final class PanelServer {
                 DispatchQueue.main.async { [weak self] in
                     self?.onLed?(snapshot)
                 }
-            } else if type == FrameType.video.rawValue,
-                      let image = UIImage(data: Data(payload)) {
-                DispatchQueue.main.async { [weak self] in
-                    self?.onVideo?(image)
-                }
+            } else if type == FrameType.video.rawValue {
+                // Decoding happens in VideoSink's own queue; the network queue
+                // only hands over the bytes so touches keep flowing.
+                onVideo?(Data(payload))
             }
         }
     }
