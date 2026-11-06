@@ -8,7 +8,9 @@ enum OuterRing {
     /// ring almost touches the screen edge on the left and right.
     static let innerScale: CGFloat = 1.02
     static let outerScale: CGFloat = 1.35
-    static let halfSpan: CGFloat = 7.5 * CGFloat.pi / 180
+    /// 1.1x the original 7.5 degree half span, so a block reads squarer next
+    /// to its ~100pt thickness instead of tall and narrow.
+    static let halfSpan: CGFloat = 8.25 * CGFloat.pi / 180
     /// Angular clearance between a button and the decorative filler beside it.
     static let gap: CGFloat = 2.0 * CGFloat.pi / 180
     /// Segment centres follow the A1...A8 zone angles: A1 top-right, clockwise.
