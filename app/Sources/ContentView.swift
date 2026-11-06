@@ -97,18 +97,21 @@ private extension CGFloat {
 struct ContentView: View {
     @StateObject private var model = PanelModel()
     /// Panel diameter as a fraction of the shorter side of the pad area (the
-    /// screen minus the name plate strip).
+    /// screen minus the name plate and control bar strips).
     private let panelScale: CGFloat = 0.72
     /// Top strip kept clear for the cabinet's name plate, so the pad sits low
     /// like the real screen instead of being centred.
     private let namePlateFraction: CGFloat = 0.17
+    /// Bottom strip reserved for the control bar, so the enlarged buttons never
+    /// cover the outermost zones.
+    private let controlBarHeight: CGFloat = 56
 
     var body: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
             let height = geometry.size.height
             let top = max(84, height * namePlateFraction)
-            let padArea = height - top
+            let padArea = max(0, height - top - controlBarHeight)
             let side = min(width, padArea) * panelScale
             let center = CGPoint(x: width / 2, y: top + padArea / 2)
             ZStack {
@@ -135,11 +138,10 @@ struct ContentView: View {
             .overlay(alignment: .topLeading) {
                 status.padding(14)
             }
-            .overlay(alignment: .topTrailing) {
-                toggles.padding(14)
-            }
             .overlay(alignment: .bottomLeading) {
-                systemKeys.padding(14)
+                controlBar
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 10)
             }
         }
         .statusBarHidden(true)
@@ -177,13 +179,23 @@ struct ContentView: View {
         }
     }
 
-    /// Cabinet operator keys, tapped from the pad instead of the PC window.
-    private var systemKeys: some View {
+    /// Cabinet keys and pad options share one bottom bar so every control is
+    /// the same size and sits where the thumbs already are.
+    private var controlBar: some View {
         HStack(spacing: 8) {
             systemKey("TEST", key: "test")
             systemKey("SERVICE", key: "service")
             systemKey("投币", key: "coin")
             systemKey("△ 三角", key: "select")
+            Rectangle()
+                .fill(Color.white.opacity(0.18))
+                .frame(width: 1, height: 22)
+                .padding(.horizontal, 4)
+            chip("镜像", isOn: model.mirrored) { model.mirrored.toggle() }
+            chip("旋转", isOn: model.rotated) { model.rotated.toggle() }
+            chip("编号", isOn: model.showLabels) { model.showLabels.toggle() }
+            chip("灯光", isOn: model.showLights) { model.showLights.toggle() }
+            chip("范围 \(model.scopeLabel)", isOn: false) { model.cycleScope() }
         }
     }
 
@@ -192,9 +204,9 @@ struct ContentView: View {
             model.tapSystem(key)
         } label: {
             Text(title)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
                 .background(Color.white.opacity(0.12), in: Capsule())
                 .foregroundStyle(Color.white.opacity(0.8))
         }
@@ -216,22 +228,12 @@ struct ContentView: View {
         .allowsHitTesting(false)
     }
 
-    private var toggles: some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            chip("镜像", isOn: model.mirrored) { model.mirrored.toggle() }
-            chip("旋转", isOn: model.rotated) { model.rotated.toggle() }
-            chip("编号", isOn: model.showLabels) { model.showLabels.toggle() }
-            chip("灯光", isOn: model.showLights) { model.showLights.toggle() }
-            chip("范围 \(model.scopeLabel)", isOn: false) { model.cycleScope() }
-        }
-    }
-
     private func chip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
                 .background(isOn ? Color.white.opacity(0.85) : Color.white.opacity(0.12), in: Capsule())
                 .foregroundStyle(isOn ? Color.black : Color.white.opacity(0.8))
         }
