@@ -17,7 +17,25 @@ enum FrameType: UInt8 {
     case ping = 0x02
     case pong = 0x03
     case buttons = 0x04
+    case system = 0x05
     case video = 0x10
+}
+
+/// Momentary cabinet keys; the ids are mirrored by pc/bridge.py.
+enum SystemKey: String {
+    case test
+    case service
+    case coin
+    case select
+
+    var id: UInt8 {
+        switch self {
+        case .test: return 1
+        case .service: return 2
+        case .coin: return 3
+        case .select: return 4
+        }
+    }
 }
 
 let protocolVersion: UInt8 = 1

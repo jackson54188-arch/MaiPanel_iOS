@@ -1,33 +1,96 @@
 import SwiftUI
 import UIKit
 
-/// Multi-touch capture. SwiftUI gestures only track one finger, so the panel is
-/// driven by a plain UIView with every touch reported as a normalised point.
-struct MultiTouchOverlay: UIViewRepresentable {
-    let onChange: ([CGPoint]) -> Void
+/// Geometry shared by the ring drawing and the ring hit-test, so what is drawn
+/// is exactly what responds.
+enum OuterRing {
+    /// Squarish cabinet blocks, a little wider than a D zone: inner edge just
+    /// outside the disc, side length about 0.23 of the panel radius.
+    static let innerScale: CGFloat = 1.02
+    static let outerScale: CGFloat = 1.25
+    static let halfSpan: CGFloat = 5.8 * CGFloat.pi / 180
+    /// Angular clearance between a button and the decorative filler beside it.
+    static let gap: CGFloat = 2.0 * CGFloat.pi / 180
+    /// Segment centres follow the A1...A8 zone angles: A1 top-right, clockwise.
+    static let angles: [CGFloat] = [-67.1, -22.1, 22.2, 67.1, 112.9, 157.8, -157.8, -112.9]
+        .map { $0 * CGFloat.pi / 180 }
 
-    func makeUIView(context: Context) -> TouchCaptureView {
-        let view = TouchCaptureView()
-        view.isMultipleTouchEnabled = true
-        view.backgroundColor = .clear
-        view.onChange = onChange
-        return view
+    static func innerRadius(_ panelRadius: CGFloat) -> CGFloat { panelRadius * innerScale }
+    static func outerRadius(_ panelRadius: CGFloat) -> CGFloat { panelRadius * outerScale }
+
+    static func angleDelta(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+        var delta = a - b
+        while delta > .pi { delta -= 2 * .pi }
+        while delta < -.pi { delta += 2 * .pi }
+        return delta
     }
 
-    func updateUIView(_ view: TouchCaptureView, context: Context) {
-        view.onChange = onChange
+    static func button(at point: CGPoint, center: CGPoint, panelRadius: CGFloat) -> Int? {
+        guard panelRadius > 0 else { return nil }
+        let dx = point.x - center.x
+        let dy = point.y - center.y
+        let radius = hypot(dx, dy)
+        let inner = innerRadius(panelRadius)
+        let outer = outerRadius(panelRadius)
+        // The disc takes precedence in PanelTouchView, so a little inward
+        // slack here only helps fingers in the seam.
+        let slack = (outer - inner) * 0.4
+        guard radius >= inner - slack, radius <= outer + slack else { return nil }
+        let angle = atan2(dy, dx)
+        for index in angles.indices
+        where abs(angleDelta(angle, angles[index])) <= halfSpan + 2 * CGFloat.pi / 180 {
+            return index
+        }
+        return nil
+    }
+
+    /// Slot between button `index` and the next one, shrunk by `gap` on both
+    /// sides so the filler piece does not touch either button.
+    static func fillerSpan(_ index: Int) -> (center: CGFloat, half: CGFloat) {
+        let next = (index + 1) % angles.count
+        var delta = angles[next] - angles[index]
+        while delta <= 0 { delta += 2 * .pi }
+        return (angles[index] + delta / 2, delta / 2 - halfSpan - gap)
     }
 }
 
-final class TouchCaptureView: UIView {
-    var onChange: (([CGPoint]) -> Void)?
-    private var points: [ObjectIdentifier: CGPoint] = [:]
+/// One capture view for the whole pad: the disc zones and the ring buttons are
+/// resolved from the same touches, so a finger can slide from a ring button
+/// into the disc (or back) without being stuck to a single UIView.
+struct PanelTouchOverlay: UIViewRepresentable {
+    let center: CGPoint
+    let panelRadius: CGFloat
+    let onChange: ([CGPoint], UInt8) -> Void
 
-    /// The disc is drawn (and clipped) as a circle, so the square corners must
-    /// not swallow touches meant for the outer buttons.
+    func makeUIView(context: Context) -> PanelTouchView {
+        let view = PanelTouchView()
+        view.isMultipleTouchEnabled = true
+        view.backgroundColor = .clear
+        view.onChange = onChange
+        view.update(center: center, panelRadius: panelRadius)
+        return view
+    }
+
+    func updateUIView(_ view: PanelTouchView, context: Context) {
+        view.onChange = onChange
+        view.update(center: center, panelRadius: panelRadius)
+    }
+}
+
+final class PanelTouchView: UIView {
+    var onChange: (([CGPoint], UInt8) -> Void)?
+    private var padCenter: CGPoint = .zero
+    private var panelRadius: CGFloat = 0
+
+    func update(center: CGPoint, panelRadius: CGFloat) {
+        padCenter = center
+        self.panelRadius = panelRadius
+    }
+
+    /// The whole screen belongs to this view. SwiftUI chips live in overlays
+    /// above it, so they still receive their own taps.
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        let radius = min(bounds.width, bounds.height) / 2
-        return hypot(point.x - bounds.midX, point.y - bounds.midY) <= radius
+        true
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -47,54 +110,56 @@ final class TouchCaptureView: UIView {
     }
 
     private func update(_ touches: Set<UITouch>, _ event: UIEvent?) {
-        guard bounds.width > 0, bounds.height > 0 else { return }
-        var live: [ObjectIdentifier: CGPoint] = [:]
+        guard panelRadius > 0 else { return }
+        var points: [CGPoint] = []
+        var mask: UInt8 = 0
         for touch in event?.allTouches ?? touches {
             guard touch.phase != .ended, touch.phase != .cancelled else { continue }
             let location = touch.location(in: self)
-            live[ObjectIdentifier(touch)] = CGPoint(
-                x: location.x / bounds.width,
-                y: location.y / bounds.height
-            )
+            let dx = location.x - padCenter.x
+            let dy = location.y - padCenter.y
+            if hypot(dx, dy) <= panelRadius {
+                points.append(CGPoint(
+                    x: (dx / panelRadius + 1) / 2,
+                    y: (dy / panelRadius + 1) / 2
+                ))
+            } else if let index = OuterRing.button(
+                at: location, center: padCenter, panelRadius: panelRadius
+            ) {
+                mask |= UInt8(1 << index)
+            }
         }
-        points = live
-        onChange?(Array(live.values))
+        onChange?(points, mask)
     }
 }
 
-/// The eight cabinet ring buttons. Each one is an arc segment hugging the disc
-/// (a trapezoid whose two bases are the inner and outer arcs), so the ring
-/// reads as a continuation of the A zones. Touches are only claimed inside a
-/// button, so the disc underneath keeps getting its own fingers.
-struct OuterButtonPad: UIViewRepresentable {
+/// The eight cabinet ring buttons plus the filler pieces between them. Drawing
+/// only: touches are handled by `PanelTouchOverlay`.
+struct OuterButtonRing: UIViewRepresentable {
     let center: CGPoint
     let panelRadius: CGFloat
     let pressed: UInt8
     let lights: Bool
-    let onChange: (UInt8) -> Void
 
-    func makeUIView(context: Context) -> OuterButtonPadView {
-        let view = OuterButtonPadView()
-        view.isMultipleTouchEnabled = true
+    func makeUIView(context: Context) -> OuterButtonRingView {
+        let view = OuterButtonRingView()
         view.backgroundColor = .clear
         view.isOpaque = false
-        view.onChange = onChange
+        view.isUserInteractionEnabled = false
         view.update(center: center, panelRadius: panelRadius)
         view.pressed = pressed
         view.lights = lights
         return view
     }
 
-    func updateUIView(_ view: OuterButtonPadView, context: Context) {
-        view.onChange = onChange
+    func updateUIView(_ view: OuterButtonRingView, context: Context) {
         view.update(center: center, panelRadius: panelRadius)
         view.pressed = pressed
         view.lights = lights
     }
 }
 
-final class OuterButtonPadView: UIView {
-    var onChange: ((UInt8) -> Void)?
+final class OuterButtonRingView: UIView {
     var pressed: UInt8 = 0 {
         didSet {
             if pressed != oldValue { setNeedsDisplay() }
@@ -106,31 +171,15 @@ final class OuterButtonPadView: UIView {
         }
     }
 
-    /// The buttons sit just outside the disc and are as wide, in angle, as the
-    /// A zones they extend (measured 28 degrees on the mask). The band is a bit
-    /// thinner than the A ring because the screen has no more room.
-    private static let innerScale: CGFloat = 1.03
-    private static let outerScale: CGFloat = 1.35
-    private static let halfSpan: CGFloat = 14.0 * CGFloat.pi / 180
-    /// Angular clearance (degrees, on each side) between a button and the
-    /// decorative filler segment that sits in the gap next to it.
-    private static let gap: CGFloat = 2.0 * CGFloat.pi / 180
-
     private var padCenter: CGPoint = .zero
     private var panelRadius: CGFloat = 0
-    private var lastSent: UInt8 = 0
 
-    private var innerRadius: CGFloat { panelRadius * Self.innerScale }
-    private var outerRadius: CGFloat { panelRadius * Self.outerScale }
+    private var innerRadius: CGFloat { OuterRing.innerRadius(panelRadius) }
+    private var outerRadius: CGFloat { OuterRing.outerRadius(panelRadius) }
     private var thickness: CGFloat { outerRadius - innerRadius }
 
-    /// Segment centres follow the A1...A8 zone angles so each button lines up
-    /// with its zone: A1 top-right, going clockwise.
-    private let angles: [CGFloat] = [-67.1, -22.1, 22.2, 67.1, 112.9, 157.8, -157.8, -112.9]
-        .map { $0 * .pi / 180 }
-
     func update(center: CGPoint, panelRadius: CGFloat) {
-        self.padCenter = center
+        padCenter = center
         self.panelRadius = panelRadius
         setNeedsDisplay()
     }
@@ -140,9 +189,9 @@ final class OuterButtonPadView: UIView {
     }
 
     /// Sampled instead of `addArc` so the sweep direction never depends on the
-    /// flipped UIKit coordinate system; 28 degrees is smooth either way.
+    /// flipped UIKit coordinate system; the spans here are small either way.
     private func addArc(to path: UIBezierPath, radius: CGFloat, from start: CGFloat, to end: CGFloat) {
-        let steps = 24
+        let steps = 16
         for step in 0...steps {
             let angle = start + (end - start) * CGFloat(step) / CGFloat(steps)
             let next = point(radius: radius, angle: angle)
@@ -163,95 +212,24 @@ final class OuterButtonPadView: UIView {
     }
 
     private func buttonPath(_ index: Int, grow: CGFloat = 0, anglePad: CGFloat = 0) -> UIBezierPath {
-        segmentPath(center: angles[index], half: Self.halfSpan + anglePad, grow: grow)
-    }
-
-    /// Slot between button `index` and the next one, shrunk by `gap` on both
-    /// sides so the filler piece does not touch either button.
-    private func fillerSpan(_ index: Int) -> (center: CGFloat, half: CGFloat) {
-        let next = (index + 1) % angles.count
-        var delta = angles[next] - angles[index]
-        while delta <= 0 { delta += 2 * .pi }
-        return (angles[index] + delta / 2, delta / 2 - Self.halfSpan - Self.gap)
-    }
-
-    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard panelRadius > 0 else { return false }
-        return button(at: point) != nil
-    }
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        update(touches, event)
-    }
-
-    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        update(touches, event)
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        update(touches, event)
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        update(touches, event)
-    }
-
-    private func update(_ touches: Set<UITouch>, _ event: UIEvent?) {
-        var live: [ObjectIdentifier: Int] = [:]
-        for touch in event?.allTouches ?? touches {
-            guard touch.phase != .ended, touch.phase != .cancelled else { continue }
-            if let index = button(at: touch.location(in: self)) {
-                live[ObjectIdentifier(touch)] = index
-            }
-        }
-        var mask: UInt8 = 0
-        for index in live.values {
-            mask |= UInt8(1 << index)
-        }
-        pressed = mask
-        guard mask != lastSent else { return }
-        lastSent = mask
-        onChange?(mask)
-    }
-
-    private func button(at point: CGPoint) -> Int? {
-        let dx = point.x - padCenter.x
-        let dy = point.y - padCenter.y
-        let radius = hypot(dx, dy)
-        // Extra reach only outward: growing inward would steal the outermost
-        // pixels of the A zones, which live just inside the disc edge.
-        let slack = thickness * 0.3
-        guard radius >= innerRadius, radius <= outerRadius + slack else { return nil }
-        let angle = atan2(dy, dx)
-        for index in angles.indices
-        where abs(angleDelta(angle, angles[index])) <= Self.halfSpan + 2 * CGFloat.pi / 180 {
-            return index
-        }
-        return nil
-    }
-
-    private func angleDelta(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
-        var delta = a - b
-        while delta > .pi { delta -= 2 * .pi }
-        while delta < -.pi { delta += 2 * .pi }
-        return delta
+        segmentPath(center: OuterRing.angles[index], half: OuterRing.halfSpan + anglePad, grow: grow)
     }
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext(), panelRadius > 0 else { return }
-        let font = UIFont.monospacedDigitSystemFont(ofSize: max(12, thickness * 0.55), weight: .semibold)
+        let font = UIFont.monospacedDigitSystemFont(ofSize: max(10, thickness * 0.34), weight: .semibold)
         let midRadius = (innerRadius + outerRadius) / 2
 
         // The gaps between buttons are cabinet ring, not buttons: same arc
         // trapezoids but flat and dimmer, and they ignore touches.
-        for index in angles.indices {
-            let slot = fillerSpan(index)
+        for index in OuterRing.angles.indices {
+            let slot = OuterRing.fillerSpan(index)
             guard slot.half > 0 else { continue }
             let path = segmentPath(center: slot.center, half: slot.half)
             context.setFillColor(UIColor.white.withAlphaComponent(lights ? 0.18 : 0.05).cgColor)
             path.fill()
             context.setStrokeColor(UIColor.white.withAlphaComponent(lights ? 0.42 : 0.18).cgColor)
-            context.setLineWidth(max(1, thickness * 0.06))
+            context.setLineWidth(max(1, thickness * 0.05))
             path.stroke()
         }
 
@@ -265,7 +243,7 @@ final class OuterButtonPadView: UIView {
                 let base = on ? 0.10 : 0.04
                 for step in stride(from: 4, through: 1, by: -1) {
                     let grow = thickness * 0.35 * CGFloat(step) / 4
-                    let pad = Self.halfSpan * 0.12 * CGFloat(step) / 4
+                    let pad = OuterRing.halfSpan * 0.12 * CGFloat(step) / 4
                     let alpha = base * CGFloat(5 - step) / 4
                     context.setFillColor(UIColor.white.withAlphaComponent(alpha).cgColor)
                     buttonPath(index, grow: grow, anglePad: pad).fill()
@@ -283,7 +261,7 @@ final class OuterButtonPadView: UIView {
                 path.fill()
                 context.setStrokeColor(UIColor.white.withAlphaComponent(on ? 0.9 : 0.30).cgColor)
             }
-            context.setLineWidth(max(1, thickness * 0.09))
+            context.setLineWidth(max(1, thickness * 0.07))
             path.stroke()
 
             let text = "\(index + 1)" as NSString
@@ -292,7 +270,7 @@ final class OuterButtonPadView: UIView {
                 .foregroundColor: on ? UIColor.black : UIColor.white.withAlphaComponent(0.85),
             ]
             let size = text.size(withAttributes: attributes)
-            let anchor = point(radius: midRadius, angle: angles[index])
+            let anchor = point(radius: midRadius, angle: OuterRing.angles[index])
             text.draw(
                 at: CGPoint(x: anchor.x - size.width / 2, y: anchor.y - size.height / 2),
                 withAttributes: attributes

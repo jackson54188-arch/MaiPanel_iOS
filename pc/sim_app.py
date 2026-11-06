@@ -12,7 +12,7 @@ import threading
 import time
 
 from bridge import (
-    FRAME_BUTTONS, FRAME_MAGIC, FRAME_PING, FRAME_TOUCH, ZONES, log,
+    FRAME_BUTTONS, FRAME_MAGIC, FRAME_PING, FRAME_SYSTEM, FRAME_TOUCH, ZONES, log,
 )
 
 
@@ -26,6 +26,10 @@ def send_mask(conn, mask):
 
 def send_buttons(conn, mask):
     conn.sendall(frame(FRAME_BUTTONS, bytes([mask])))
+
+
+def send_system(conn, key_id):
+    conn.sendall(frame(FRAME_SYSTEM, bytes([key_id])))
 
 
 def session(conn):
@@ -43,6 +47,10 @@ def session(conn):
             time.sleep(0.3)
         send_buttons(conn, 0)
         log("BTN 全部松开")
+        for key_id, name in enumerate(("TEST", "SERVICE", "投币", "三角"), start=1):
+            send_system(conn, key_id)
+            log(f"SYS {name}")
+            time.sleep(0.4)
         while True:
             time.sleep(1)
     except OSError:

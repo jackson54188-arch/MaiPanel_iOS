@@ -26,14 +26,12 @@ final class PanelModel: ObservableObject {
     }
 
     let mask: ZoneMask?
-    let maskImage: UIImage?
     let zoneCenters: [String: CGPoint]
     private let server = PanelServer()
 
     init() {
         let maskURL = Bundle.main.url(forResource: "panel_mask", withExtension: "png")
         mask = maskURL.flatMap { ZoneMask(url: $0) }
-        maskImage = maskURL.flatMap { UIImage(contentsOfFile: $0.path) }
         zoneCenters = Self.loadCenters()
 
         server.onConnected = { [weak self] in
@@ -71,6 +69,11 @@ final class PanelModel: ObservableObject {
         server.sendButtons(mask: mask)
     }
 
+    func tapSystem(_ key: String) {
+        guard let key = SystemKey(rawValue: key) else { return }
+        server.sendSystem(key)
+    }
+
     private static func loadCenters() -> [String: CGPoint] {
         guard
             let url = Bundle.main.url(forResource: "zone_centers", withExtension: "json"),
@@ -93,14 +96,21 @@ private extension CGFloat {
 
 struct ContentView: View {
     @StateObject private var model = PanelModel()
-    /// Panel diameter as a fraction of the shorter screen side. The rest is
-    /// reserved for the arc-shaped cabinet buttons outside the disc.
+    /// Panel diameter as a fraction of the shorter side of the pad area (the
+    /// screen minus the name plate strip).
     private let panelScale: CGFloat = 0.72
+    /// Top strip kept clear for the cabinet's name plate, so the pad sits low
+    /// like the real screen instead of being centred.
+    private let namePlateFraction: CGFloat = 0.17
 
     var body: some View {
         GeometryReader { geometry in
-            let side = min(geometry.size.width, geometry.size.height) * panelScale
-            let center = CGPoint(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            let width = geometry.size.width
+            let height = geometry.size.height
+            let top = max(84, height * namePlateFraction)
+            let padArea = height - top
+            let side = min(width, padArea) * panelScale
+            let center = CGPoint(x: width / 2, y: top + padArea / 2)
             ZStack {
                 Color.black.ignoresSafeArea()
 
@@ -108,20 +118,28 @@ struct ContentView: View {
                     .frame(width: side, height: side)
                     .position(center)
 
-                OuterButtonPad(
+                OuterButtonRing(
                     center: center,
                     panelRadius: side / 2,
                     pressed: model.buttons,
-                    lights: model.showLights,
-                    onChange: { model.handleButtons($0) }
+                    lights: model.showLights
                 )
-                .frame(width: geometry.size.width, height: geometry.size.height)
+                .frame(width: width, height: height)
+
+                PanelTouchOverlay(center: center, panelRadius: side / 2) { points, buttons in
+                    model.handleTouch(points)
+                    model.handleButtons(buttons)
+                }
+                .frame(width: width, height: height)
             }
             .overlay(alignment: .topLeading) {
                 status.padding(14)
             }
             .overlay(alignment: .topTrailing) {
                 toggles.padding(14)
+            }
+            .overlay(alignment: .bottomLeading) {
+                systemKeys.padding(14)
             }
         }
         .statusBarHidden(true)
@@ -131,14 +149,6 @@ struct ContentView: View {
 
     private func panel(size: CGFloat) -> some View {
         ZStack {
-            if let image = model.maskImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .interpolation(.medium)
-                    .opacity(0.55)
-                    .allowsHitTesting(false)
-            }
-
             if model.showLabels {
                 ForEach(zoneNames, id: \.self) { zone in
                     if let center = model.zoneCenters[zone] {
@@ -164,11 +174,31 @@ struct ContentView: View {
                     .position(x: item.element.x * size, y: item.element.y * size)
                     .allowsHitTesting(false)
             }
-
-            MultiTouchOverlay { model.handleTouch($0) }
-                .contentShape(Circle())
-                .clipShape(Circle())
         }
+    }
+
+    /// Cabinet operator keys, tapped from the pad instead of the PC window.
+    private var systemKeys: some View {
+        HStack(spacing: 8) {
+            systemKey("TEST", key: "test")
+            systemKey("SERVICE", key: "service")
+            systemKey("投币", key: "coin")
+            systemKey("△ 三角", key: "select")
+        }
+    }
+
+    private func systemKey(_ title: String, key: String) -> some View {
+        Button {
+            model.tapSystem(key)
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.white.opacity(0.12), in: Capsule())
+                .foregroundStyle(Color.white.opacity(0.8))
+        }
+        .buttonStyle(.plain)
     }
 
     private var status: some View {

@@ -1,7 +1,7 @@
 """Bridge between the iPad touch panel app and the maimai touch panel serial port.
 
     iPad app (TCP server, port 24870)
-        <-- usbmux over USB -->  pymobiledevice3 usbmux forward 24870 24870
+        <-- usbmux over USB -->  in-process forward (pc/forward.py)
     this script (TCP client 127.0.0.1:24870 + serial writer)
         <-- virtual COM pair (com0com) -->  Sinmai.exe on COM3
 
@@ -18,7 +18,6 @@ import argparse
 import json
 import socket
 import struct
-import subprocess
 import sys
 import threading
 import time
@@ -41,6 +40,10 @@ FRAME_TOUCH = 0x01
 FRAME_PING = 0x02
 FRAME_PONG = 0x03
 FRAME_BUTTONS = 0x04
+FRAME_SYSTEM = 0x05
+
+# Payload id from the iPad's system-key frame -> SYSTEM_VKS name.
+SYSTEM_FRAME_KEYS = {1: "test", 2: "service", 3: "coin", 4: "select"}
 
 # Outer buttons 1..8 -> keyboard E D C X Z A Q W (virtual key codes).
 BUTTON_VKS = (0x45, 0x44, 0x43, 0x58, 0x5A, 0x41, 0x51, 0x57)
@@ -213,6 +216,9 @@ class SerialLink:
         self.connected = False
         self.mask = 0
         self.running = True
+        # The game forgets the panel state when the link drops; resend the
+        # current mask even if it did not change since the last write.
+        self.needs_sync = True
         self._connect()
 
     def _connect(self):
@@ -222,6 +228,7 @@ class SerialLink:
             self.ser = None
             log(f"串口 {self.port} 打不开, 稍后重试: {error}")
             return False
+        self.needs_sync = True
         if isinstance(self.ser, DrySerial):
             self.connected = True
         return True
@@ -263,16 +270,19 @@ class SerialLink:
                     reply = bytes([0x28, chunk[1], chunk[2], chunk[3], chunk[4], 0x29])
                     self._raw_write(reply)
                     log("握手 " + reply.hex(" "))
+                    self.needs_sync = True
                     del buf[:6]
                 elif marker == ord("A"):
                     if not self.connected:
                         log("游戏已接受触摸板")
                     self.connected = True
+                    self.needs_sync = True
                     del buf[:6]
                 elif marker in (ord("L"), ord("E")):
                     if self.connected:
                         log("触摸板已断开")
                     self.connected = False
+                    self.needs_sync = True
                     del buf[:6]
                 else:
                     del buf[:1]
@@ -281,9 +291,10 @@ class SerialLink:
         last = None
         while self.running:
             packet = build_packet(self.mask)
-            if self.connected and packet != last:
+            if self.connected and (packet != last or self.needs_sync):
                 self._raw_write(packet)
                 last = packet
+                self.needs_sync = False
             time.sleep(0.004)
 
     def _raw_write(self, data):
@@ -314,11 +325,12 @@ class AppLink:
     only counts as connected after the app's first frame arrives.
     """
 
-    def __init__(self, host, port, on_mask, on_buttons):
+    def __init__(self, host, port, on_mask, on_buttons, on_system):
         self.host = host
         self.port = port
         self.on_mask = on_mask
         self.on_buttons = on_buttons
+        self.on_system = on_system
         self.running = True
         self.sock = None
         self.linked = False
@@ -402,6 +414,10 @@ class AppLink:
                 elif frame_type == FRAME_BUTTONS and payload:
                     self.buttons = payload[0]
                     self.on_buttons(self.buttons)
+                elif frame_type == FRAME_SYSTEM and payload:
+                    key = SYSTEM_FRAME_KEYS.get(payload[0])
+                    if key:
+                        self.on_system(key)
                 elif frame_type == FRAME_PING:
                     sock.sendall(FRAME_MAGIC + bytes([1, FRAME_PONG, 0, 0]))
 
@@ -529,13 +545,15 @@ def status_loop(hub, serial_link, app_link):
         time.sleep(0.01)
 
 
-def start_forward(local_port, device_port):
-    command = [
-        sys.executable, "-m", "pymobiledevice3", "usbmux",
-        "forward", str(local_port), str(device_port),
-    ]
-    log("启动 usbmux 转发: " + " ".join(command))
-    return subprocess.Popen(command)
+def start_forward(local_port, device_port, udid=None):
+    try:
+        from forward import UsbForward
+    except ImportError as error:
+        log(f"USB 转发不可用 (先 pip install pymobiledevice3): {error}")
+        return None
+    forward = UsbForward(local_port, device_port, udid=udid, log=log)
+    forward.start()
+    return forward
 
 
 def main():
@@ -544,16 +562,23 @@ def main():
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=24870)
-    parser.add_argument("--usb", action="store_true", help="顺带启动 pymobiledevice3 usbmux forward")
+    parser.add_argument("--usb", action="store_true", help="顺带启动 usbmux 转发")
+    parser.add_argument("--udid", default=None, help="多台设备时指定 iPad 的 UDID")
     parser.add_argument("--hub-port", type=int, default=24871,
                         help="监视窗口端口, 0 = 不广播")
     args = parser.parse_args()
 
-    forward = start_forward(args.port, args.port) if args.usb else None
+    forward = start_forward(args.port, args.port, args.udid) if args.usb else None
 
     serial_link = SerialLink(args.serial, args.baud)
     injector = KeyInjector()
-    app_link = AppLink(args.host, args.port, serial_link.set_mask, injector.set_mask)
+
+    def system_tap(name):
+        # tap holds the key for 90 ms; keep the touch receive thread free.
+        threading.Thread(target=injector.tap, args=(name,), daemon=True).start()
+
+    app_link = AppLink(args.host, args.port, serial_link.set_mask, injector.set_mask,
+                       system_tap)
     serial_link.start()
     app_link.start()
     hub = None
@@ -591,7 +616,7 @@ def main():
         if hub:
             hub.close()
         if forward:
-            forward.terminate()
+            forward.running = False
         log("已退出")
 
 

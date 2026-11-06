@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-/// TCP server the PC bridge dials through `pymobiledevice3 usbmux forward`.
+/// TCP server the PC bridge dials through its usbmux forwarder (pc/forward.py).
 final class PanelServer {
     private let queue = DispatchQueue(label: "maipanel.server")
     private var listener: NWListener?
@@ -9,6 +9,7 @@ final class PanelServer {
     private var lastMask: UInt64 = 0
     private var lastButtons: UInt8 = 0
     private var keepAlive: DispatchSourceTimer?
+    private var inbox: [UInt8] = []
 
     var onConnected: (() -> Void)?
     var onDisconnected: (() -> Void)?
@@ -64,9 +65,17 @@ final class PanelServer {
         }
     }
 
+    func sendSystem(_ key: SystemKey) {
+        queue.async { [weak self] in
+            guard let self, let connection = self.connection else { return }
+            self.send(encodeFrame(.system, Data([key.id])), on: connection)
+        }
+    }
+
     private func accept(_ connection: NWConnection) {
         self.connection?.cancel()
         self.connection = connection
+        inbox.removeAll()
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -88,7 +97,7 @@ final class PanelServer {
     }
 
     private func receive(on connection: NWConnection) {
-        connection.receive(minimumIncompleteLength: 8, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty {
                 self.handleIncoming(data)
@@ -101,13 +110,27 @@ final class PanelServer {
         }
     }
 
+    /// TCP may split or coalesce frames, so keep a byte buffer and cut frames
+    /// by their length field instead of assuming one callback equals one frame.
     /// Video frames land here once streaming exists; for now only pings are expected.
     private func handleIncoming(_ data: Data) {
-        guard let text = String(data: data.prefix(4), encoding: .ascii), text == "MPNL" else { return }
-        guard data.count >= 8 else { return }
-        let type = data[5]
-        if type == FrameType.ping.rawValue, let connection = self.connection {
-            send(encodeFrame(.pong, Data()), on: connection)
+        inbox.append(contentsOf: data)
+        while inbox.count >= 8 {
+            guard inbox[0] == 0x4D, inbox[1] == 0x50, inbox[2] == 0x4E, inbox[3] == 0x4C else {
+                inbox.removeFirst()
+                continue
+            }
+            let length = Int(inbox[6]) | (Int(inbox[7]) << 8)
+            guard length <= 8192 else {
+                inbox.removeAll()
+                return
+            }
+            guard inbox.count >= 8 + length else { return }
+            let type = inbox[5]
+            inbox.removeFirst(8 + length)
+            if type == FrameType.ping.rawValue, let connection = self.connection {
+                send(encodeFrame(.pong, Data()), on: connection)
+            }
         }
     }
 
