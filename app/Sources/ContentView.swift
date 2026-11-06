@@ -165,7 +165,7 @@ struct ContentView: View {
     private let controlRowHeight: CGFloat = 50
     /// Distance from the top of the outer ring to the control row.
     private let controlRowGap: CGFloat = 14
-    private let menuPanelHeight: CGFloat = 150
+    private let menuPanelHeight: CGFloat = 158
 
     @State private var menuOpen = false
 
