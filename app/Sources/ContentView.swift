@@ -241,6 +241,20 @@ struct ContentView: View {
         }
     }
 
+    /// A bright body LED floods the area above the ring with white, so the
+    /// controls sitting there have to swap to dark text.
+    private var shellLit: Bool {
+        model.showLights && model.led.valid && model.led.body > 0.35
+    }
+
+    private var controlTint: Color {
+        shellLit ? Color.black.opacity(0.85) : Color.white.opacity(0.9)
+    }
+
+    private var controlFill: Color {
+        shellLit ? Color.black.opacity(0.12) : Color.white.opacity(0.12)
+    }
+
     /// Only the three keys used mid-credit keep a permanent button; everything
     /// else, including the setup toggles, lives one tap deeper in 菜单.
     private func controlRow(width: CGFloat) -> some View {
@@ -254,10 +268,10 @@ struct ContentView: View {
                     .font(.system(size: 18, weight: .semibold, design: .monospaced))
                     .frame(maxWidth: .infinity, minHeight: 50)
                     .background(
-                        (menuOpen ? Color.white.opacity(0.85) : Color.white.opacity(0.12)),
+                        (menuOpen ? Color.white.opacity(0.85) : (shellLit ? Color.black.opacity(0.20) : Color.white.opacity(0.12))),
                         in: Capsule()
                     )
-                    .foregroundStyle(menuOpen ? Color.black : Color.white.opacity(0.9))
+                    .foregroundStyle(menuOpen ? Color.black : controlTint)
             }
             .buttonStyle(.plain)
         }
@@ -281,10 +295,13 @@ struct ContentView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+        .background(
+            shellLit ? Color.black.opacity(0.10) : Color.white.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 18)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 18)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                .stroke(shellLit ? Color.black.opacity(0.15) : Color.white.opacity(0.12), lineWidth: 1)
         )
     }
 
@@ -295,8 +312,8 @@ struct ContentView: View {
             Text(title)
                 .font(.system(size: 18, weight: .semibold, design: .monospaced))
                 .frame(maxWidth: .infinity, minHeight: 50)
-                .background(Color.white.opacity(0.12), in: Capsule())
-                .foregroundStyle(Color.white.opacity(0.9))
+                .background(controlFill, in: Capsule())
+                .foregroundStyle(controlTint)
         }
         .buttonStyle(.plain)
     }
@@ -308,8 +325,8 @@ struct ContentView: View {
             Text(title)
                 .font(.system(size: 14, weight: .semibold, design: .monospaced))
                 .frame(maxWidth: .infinity, minHeight: 44)
-                .background(Color.white.opacity(0.12), in: Capsule())
-                .foregroundStyle(Color.white.opacity(0.9))
+                .background(controlFill, in: Capsule())
+                .foregroundStyle(controlTint)
         }
         .buttonStyle(.plain)
     }
@@ -320,10 +337,10 @@ struct ContentView: View {
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .background(
-                    (isOn ? Color.white.opacity(0.85) : Color.white.opacity(0.12)),
+                    (isOn ? Color.white.opacity(0.85) : controlFill),
                     in: Capsule()
                 )
-                .foregroundStyle(isOn ? Color.black : Color.white.opacity(0.85))
+                .foregroundStyle(isOn ? Color.black : controlTint)
         }
         .buttonStyle(.plain)
     }
@@ -331,7 +348,8 @@ struct ContentView: View {
     private var status: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(model.connected ? "PC 已连接" : "PC 未连接")
-                .foregroundStyle(model.connected ? Color.green : Color.orange)
+                .foregroundStyle(shellLit ? Color.black.opacity(0.8)
+                                          : (model.connected ? Color.green : Color.orange))
             Text("端口 \(panelServicePort)")
             Text(model.led.valid ? "灯光: 游戏" : "灯光: 无")
             Text(model.zones.isEmpty ? "触摸: 无" : "触摸: " + model.zones.sorted().joined(separator: " "))
@@ -340,7 +358,7 @@ struct ContentView: View {
                  : "外键: " + model.pressedButtons.map(String.init).joined(separator: " "))
         }
         .font(.system(size: 12, weight: .medium, design: .monospaced))
-        .foregroundStyle(Color.white.opacity(0.75))
+        .foregroundStyle(controlTint.opacity(0.85))
         .allowsHitTesting(false)
     }
 }
