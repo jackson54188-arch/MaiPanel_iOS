@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import UIKit
 
 /// TCP server the PC bridge dials through its usbmux forwarder (pc/forward.py).
 final class PanelServer {
@@ -14,6 +15,7 @@ final class PanelServer {
     var onConnected: (() -> Void)?
     var onDisconnected: (() -> Void)?
     var onLed: ((LedSnapshot) -> Void)?
+    var onVideo: ((UIImage) -> Void)?
 
     func start(port: UInt16 = panelServicePort) {
         queue.async { [weak self] in
@@ -73,6 +75,13 @@ final class PanelServer {
         }
     }
 
+    func sendVideoControl(_ on: Bool) {
+        queue.async { [weak self] in
+            guard let self, let connection = self.connection else { return }
+            self.send(encodeVideoControl(on), on: connection)
+        }
+    }
+
     private func accept(_ connection: NWConnection) {
         self.connection?.cancel()
         self.connection = connection
@@ -113,8 +122,6 @@ final class PanelServer {
 
     /// TCP may split or coalesce frames, so keep a byte buffer and cut frames
     /// by their length field instead of assuming one callback equals one frame.
-    /// Pings and game LED frames arrive here; video frames land here once
-    /// streaming exists.
     private func handleIncoming(_ data: Data) {
         inbox.append(contentsOf: data)
         while inbox.count >= 8 {
@@ -122,10 +129,12 @@ final class PanelServer {
                 inbox.removeFirst()
                 continue
             }
+            // Length is u16, and video frames use most of that range; the
+            // bridge keeps each JPEG under 60 KB.
             let length = Int(inbox[6]) | (Int(inbox[7]) << 8)
-            guard length <= 8192 else {
-                inbox.removeAll()
-                return
+            guard length <= 65000 else {
+                inbox.removeFirst()
+                continue
             }
             guard inbox.count >= 8 + length else { return }
             let type = inbox[5]
@@ -136,6 +145,11 @@ final class PanelServer {
             } else if type == FrameType.led.rawValue, let snapshot = LedSnapshot(payload: payload) {
                 DispatchQueue.main.async { [weak self] in
                     self?.onLed?(snapshot)
+                }
+            } else if type == FrameType.video.rawValue,
+                      let image = UIImage(data: Data(payload)) {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onVideo?(image)
                 }
             }
         }

@@ -42,6 +42,8 @@ FRAME_PONG = 0x03
 FRAME_BUTTONS = 0x04
 FRAME_SYSTEM = 0x05
 FRAME_LED = 0x06
+FRAME_CONTROL = 0x07
+FRAME_VIDEO = 0x10
 
 # pc/ledmod/MaiPanelLed.cs sends 33-byte datagrams; forward the 28 bytes the
 # iPad needs (flags, 8 x RGB, body/circle/side brightness).
@@ -341,12 +343,13 @@ class AppLink:
     only counts as connected after the app's first frame arrives.
     """
 
-    def __init__(self, host, port, on_mask, on_buttons, on_system):
+    def __init__(self, host, port, on_mask, on_buttons, on_system, on_control=None):
         self.host = host
         self.port = port
         self.on_mask = on_mask
         self.on_buttons = on_buttons
         self.on_system = on_system
+        self.on_control = on_control
         self.running = True
         self.sock = None
         self.linked = False
@@ -435,6 +438,8 @@ class AppLink:
                     key = SYSTEM_FRAME_KEYS.get(payload[0])
                     if key:
                         self.on_system(key)
+                elif frame_type == FRAME_CONTROL and len(payload) >= 2 and self.on_control:
+                    self.on_control(payload[0], payload[1])
                 elif frame_type == FRAME_PING:
                     self.send_frame(FRAME_PONG, b"")
 
@@ -505,6 +510,64 @@ class LedLink:
             self.sock.close()
         except (OSError, AttributeError):
             pass
+
+
+class VideoLink:
+    """Mirrors the game window to the iPad as JPEG frames.
+
+    Only runs while the app asks for it (control frame 0x07 cmd 1) and the app
+    is actually linked; otherwise the capture thread stays idle.
+    """
+
+    def __init__(self, app_link, max_width=432, fps=8, quality=55):
+        self.app_link = app_link
+        self.max_width = max_width
+        self.interval = 1.0 / max(1, fps)
+        self.quality = quality
+        self.enabled = False
+        self.running = True
+        self.capture = None
+        self.frames = 0
+
+    def start(self):
+        try:
+            from screen_capture import GameCapture
+        except Exception as error:
+            log(f"画面捕获不可用: {error}")
+            return False
+        self.capture = GameCapture(max_width=self.max_width,
+                                   quality=self.quality, log=log)
+        threading.Thread(target=self._loop, daemon=True).start()
+        return True
+
+    @property
+    def window_found(self):
+        return bool(self.capture and self.capture.window_found)
+
+    def set_enabled(self, on):
+        on = bool(on)
+        if on == self.enabled:
+            return
+        self.enabled = on
+        log("iPad 画面镜像 " + ("开" if on else "关"))
+
+    def _loop(self):
+        while self.running:
+            if not self.enabled or not self.app_link.connected:
+                time.sleep(0.1)
+                continue
+            started = time.time()
+            data = self.capture.grab()
+            if data is not None and self.app_link.send_frame(FRAME_VIDEO, data):
+                self.frames += 1
+                if self.frames == 1:
+                    log(f"画面已开始推流 ({len(data)} 字节/帧)")
+            delay = self.interval - (time.time() - started)
+            if delay > 0:
+                time.sleep(delay)
+
+    def close(self):
+        self.running = False
 
 
 class MonitorHub:
@@ -612,7 +675,7 @@ class MonitorHub:
             self.clients.clear()
 
 
-def status_loop(hub, serial_link, app_link, led_link):
+def status_loop(hub, serial_link, app_link, led_link, video_link=None):
     last = None
     while hub.running:
         mask = serial_link.mask
@@ -624,6 +687,8 @@ def status_loop(hub, serial_link, app_link, led_link):
             "zones": zone_names(mask),
             "buttons": app_link.buttons,
             "led": bool(led_link and led_link.alive),
+            "video": bool(video_link and video_link.enabled),
+            "video_window": bool(video_link and video_link.window_found),
         }
         if state != last:
             hub.publish(state)
@@ -654,6 +719,8 @@ def main():
                         help="监视窗口端口, 0 = 不广播")
     parser.add_argument("--led-port", type=int, default=LED_PORT,
                         help="游戏灯光 UDP 端口, 0 = 不接收")
+    parser.add_argument("--video-width", type=int, default=432,
+                        help="镜像到 iPad 的画面宽度, 0 = 不启动")
     args = parser.parse_args()
 
     forward = start_forward(args.port, args.port, args.udid) if args.usb else None
@@ -665,10 +732,20 @@ def main():
         # tap holds the key for 90 ms; keep the touch receive thread free.
         threading.Thread(target=injector.tap, args=(name,), daemon=True).start()
 
+    video_link = None
+
+    def control(cmd, value):
+        # The app only controls mirroring so far (cmd 1).
+        if cmd == 1 and video_link is not None:
+            video_link.set_enabled(value)
+
     app_link = AppLink(args.host, args.port, serial_link.set_mask, injector.set_mask,
-                       system_tap)
+                       system_tap, on_control=control)
     serial_link.start()
     app_link.start()
+    video_link = VideoLink(app_link, max_width=args.video_width)
+    if not video_link.start():
+        video_link = None
     led_link = None
     if args.led_port:
         led_link = LedLink(args.led_port, app_link)
@@ -678,7 +755,8 @@ def main():
     if args.hub_port:
         hub = MonitorHub("127.0.0.1", args.hub_port, on_command=injector.tap)
         if hub.start():
-            threading.Thread(target=status_loop, args=(hub, serial_link, app_link, led_link),
+            threading.Thread(target=status_loop,
+                             args=(hub, serial_link, app_link, led_link, video_link),
                              daemon=True).start()
         else:
             hub = None
@@ -706,6 +784,8 @@ def main():
         app_link.running = False
         injector.release_all()
         serial_link.close()
+        if video_link:
+            video_link.close()
         if led_link:
             led_link.close()
         if hub:

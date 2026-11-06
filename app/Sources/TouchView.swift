@@ -143,7 +143,6 @@ struct OuterButtonRing: UIViewRepresentable {
     let ledValid: Bool
     let ledColors: [UIColor]
     let circleLevel: CGFloat
-    let bodyLevel: CGFloat
     let sideLevel: CGFloat
 
     func makeUIView(context: Context) -> OuterButtonRingView {
@@ -157,7 +156,6 @@ struct OuterButtonRing: UIViewRepresentable {
         view.ledValid = ledValid
         view.ledColors = ledColors
         view.circleLevel = circleLevel
-        view.bodyLevel = bodyLevel
         view.sideLevel = sideLevel
         return view
     }
@@ -169,7 +167,6 @@ struct OuterButtonRing: UIViewRepresentable {
         view.ledValid = ledValid
         view.ledColors = ledColors
         view.circleLevel = circleLevel
-        view.bodyLevel = bodyLevel
         view.sideLevel = sideLevel
     }
 }
@@ -196,11 +193,6 @@ final class OuterButtonRingView: UIView {
     var circleLevel: CGFloat = 0 {
         didSet {
             if circleLevel != oldValue { setNeedsDisplay() }
-        }
-    }
-    var bodyLevel: CGFloat = 0 {
-        didSet {
-            if bodyLevel != oldValue { setNeedsDisplay() }
         }
     }
     var sideLevel: CGFloat = 0 {
@@ -285,22 +277,6 @@ final class OuterButtonRingView: UIView {
             context.setStrokeColor(UIColor.white.withAlphaComponent(lights ? 0.42 : 0.18).cgColor)
             context.setLineWidth(max(1, thickness * 0.05))
             path.stroke()
-        }
-
-        // Body LEDs are the cabinet shell, so they light the area outside the
-        // ring rather than the disc rim. Capped at 70% white so a full-on
-        // effect reads as backlight instead of a solid white page.
-        if lights && ledValid && bodyLevel > 0.02 {
-            let shell = UIBezierPath(rect: bounds)
-            shell.append(UIBezierPath(ovalIn: CGRect(
-                x: padCenter.x - outerRadius,
-                y: padCenter.y - outerRadius,
-                width: outerRadius * 2,
-                height: outerRadius * 2
-            )))
-            shell.usesEvenOddFillRule = true
-            context.setFillColor(UIColor.white.withAlphaComponent(0.7 * bodyLevel).cgColor)
-            shell.fill()
         }
 
         // The circle LED is the rim of the round screen, just inside the disc.
@@ -395,5 +371,70 @@ final class OuterButtonRingView: UIView {
                 withAttributes: attributes
             )
         }
+    }
+}
+
+/// Cabinet shell backlight: white outside the ring, capped at 70% so a full-on
+/// body LED reads as backlight instead of a solid white page. Drawn underneath
+/// the mirrored game picture.
+struct ShellGlow: UIViewRepresentable {
+    let center: CGPoint
+    let panelRadius: CGFloat
+    let lights: Bool
+    let level: CGFloat
+
+    func makeUIView(context: Context) -> ShellGlowView {
+        let view = ShellGlowView()
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isUserInteractionEnabled = false
+        view.update(center: center, panelRadius: panelRadius)
+        view.lights = lights
+        view.level = level
+        return view
+    }
+
+    func updateUIView(_ view: ShellGlowView, context: Context) {
+        view.update(center: center, panelRadius: panelRadius)
+        view.lights = lights
+        view.level = level
+    }
+}
+
+final class ShellGlowView: UIView {
+    var lights = true {
+        didSet {
+            if lights != oldValue { setNeedsDisplay() }
+        }
+    }
+    var level: CGFloat = 0 {
+        didSet {
+            if level != oldValue { setNeedsDisplay() }
+        }
+    }
+
+    private var padCenter: CGPoint = .zero
+    private var panelRadius: CGFloat = 0
+
+    func update(center: CGPoint, panelRadius: CGFloat) {
+        padCenter = center
+        self.panelRadius = panelRadius
+        setNeedsDisplay()
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard lights, level > 0.02, panelRadius > 0,
+              let context = UIGraphicsGetCurrentContext() else { return }
+        let radius = OuterRing.outerRadius(panelRadius)
+        let shell = UIBezierPath(rect: bounds)
+        shell.append(UIBezierPath(ovalIn: CGRect(
+            x: padCenter.x - radius,
+            y: padCenter.y - radius,
+            width: radius * 2,
+            height: radius * 2
+        )))
+        shell.usesEvenOddFillRule = true
+        context.setFillColor(UIColor.white.withAlphaComponent(0.7 * level).cgColor)
+        shell.fill()
     }
 }

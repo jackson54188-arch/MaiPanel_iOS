@@ -19,7 +19,14 @@ enum FrameType: UInt8 {
     case buttons = 0x04
     case system = 0x05
     case led = 0x06
+    case control = 0x07
     case video = 0x10
+}
+
+/// Control payload is [command, value]; 1/1 asks the PC to mirror the game
+/// window, 1/0 stops it.
+func encodeVideoControl(_ on: Bool) -> Data {
+    encodeFrame(.control, Data([1, on ? 1 : 0]))
 }
 
 /// Game LED state relayed from the PC mod: 8 button colours plus the cabinet

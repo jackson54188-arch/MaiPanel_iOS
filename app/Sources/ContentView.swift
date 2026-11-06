@@ -18,11 +18,18 @@ final class PanelModel: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var buttons: UInt8 = 0
     @Published private(set) var led = LedRenderState()
+    @Published private(set) var videoFrame: UIImage?
 
     @Published var mirrored = false
     @Published var rotated = false
     @Published var showLabels = true
     @Published var showLights = true
+    @Published var showVideo = false {
+        didSet {
+            server.sendVideoControl(showVideo)
+            if !showVideo { videoFrame = nil }
+        }
+    }
     @Published private(set) var scopeIndex = 1
 
     private static let scopes: [CGFloat] = [0.012, 0.02, 0.03]
@@ -47,16 +54,24 @@ final class PanelModel: ObservableObject {
         zoneCenters = Self.loadCenters()
 
         server.onConnected = { [weak self] in
-            Task { @MainActor in self?.connected = true }
+            Task { @MainActor in
+                self?.connected = true
+                // The bridge forgets the mirror state, so re-announce it.
+                self?.server.sendVideoControl(self?.showVideo ?? false)
+            }
         }
         server.onDisconnected = { [weak self] in
             Task { @MainActor in
                 self?.connected = false
                 self?.led.valid = false
+                self?.videoFrame = nil
             }
         }
         server.onLed = { [weak self] snapshot in
             Task { @MainActor in self?.applyLed(snapshot) }
+        }
+        server.onVideo = { [weak self] image in
+            Task { @MainActor in self?.videoFrame = image }
         }
         server.start()
     }
@@ -138,12 +153,19 @@ struct ContentView: View {
     /// play disc pinned to the bottom edge. On a 2:3 iPad that frame is fitted
     /// by height, so its width sets how large the disc may get.
     private let gameAspect: CGFloat = 9.0 / 16.0
+    /// Game picture geometry inside its 9:16 frame, measured from the real
+    /// screen: circle radius 28.15% of the height, centre 71.9% down.
+    private let gameRadius: CGFloat = 0.2815
+    private let gameCenterY: CGFloat = 0.719
+    /// Ring outer radius plus the picture above the circle centre, in disc
+    /// radii; keeps the mirrored frame from running off the top edge.
+    private var frameDepth: CGFloat { OuterRing.outerScale + gameCenterY / gameRadius }
     /// Clearance between the outer ring and the screen edge.
     private let screenMargin: CGFloat = 6
     private let controlRowHeight: CGFloat = 50
     /// Distance from the top of the outer ring to the control row.
     private let controlRowGap: CGFloat = 14
-    private let menuPanelHeight: CGFloat = 116
+    private let menuPanelHeight: CGFloat = 150
 
     @State private var menuOpen = false
 
@@ -156,7 +178,8 @@ struct ContentView: View {
             // bottom, which leaves the disc itself a small gap above it.
             let radius = min(
                 gameWidth * 0.485,
-                (size.width / 2 - screenMargin) / OuterRing.outerScale
+                (size.width / 2 - screenMargin) / OuterRing.outerScale,
+                (size.height - screenMargin - 2) / frameDepth
             )
             let ringOuter = radius * OuterRing.outerScale
             let center = CGPoint(x: size.width / 2, y: size.height - screenMargin - ringOuter)
@@ -165,6 +188,26 @@ struct ContentView: View {
 
             ZStack {
                 Color.black.ignoresSafeArea()
+
+                // Cabinet shell light sits behind the mirrored picture, so a
+                // bright body LED never washes the game screen out.
+                ShellGlow(
+                    center: center,
+                    panelRadius: radius,
+                    lights: model.showLights,
+                    level: model.led.valid ? model.led.body : 0
+                )
+                .frame(width: size.width, height: size.height)
+
+                if model.showVideo, let frame = model.videoFrame {
+                    let rect = videoRect(center: center, radius: radius)
+                    Image(uiImage: frame)
+                        .resizable()
+                        .interpolation(.medium)
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+                        .allowsHitTesting(false)
+                }
 
                 panel(size: radius * 2)
                     .frame(width: radius * 2, height: radius * 2)
@@ -178,7 +221,6 @@ struct ContentView: View {
                     ledValid: model.led.valid,
                     ledColors: model.led.colors,
                     circleLevel: model.led.circle,
-                    bodyLevel: model.led.body,
                     sideLevel: model.led.side
                 )
                 .frame(width: size.width, height: size.height)
@@ -202,8 +244,10 @@ struct ContentView: View {
                     .frame(width: rowWidth, height: controlRowHeight)
                     .position(x: size.width / 2, y: rowBottom - controlRowHeight / 2)
             }
+            // The game's name plate lives in the top strip, so the status
+            // readout sits in the side bezel and the details wait in 菜单.
             .overlay(alignment: .topLeading) {
-                status.padding(14)
+                statusDot.padding(14)
             }
         }
         .statusBarHidden(true)
@@ -290,8 +334,11 @@ struct ContentView: View {
                 panelChip("旋转", isOn: model.rotated) { model.rotated.toggle() }
                 panelChip("编号", isOn: model.showLabels) { model.showLabels.toggle() }
                 panelChip("灯光", isOn: model.showLights) { model.showLights.toggle() }
+                panelChip("画面", isOn: model.showVideo) { model.showVideo.toggle() }
                 panelChip("范围 \(model.scopeLabel)", isOn: false) { model.cycleScope() }
             }
+            statusLines
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -345,20 +392,41 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    private var status: some View {
+    /// The mirrored 9:16 frame placed so the game's circle lands exactly under
+    /// the touch disc.
+    private func videoRect(center: CGPoint, radius: CGFloat) -> CGRect {
+        let height = radius / gameRadius
+        let width = height * gameAspect
+        return CGRect(
+            x: center.x - 0.4984 * width,
+            y: center.y - gameCenterY * height,
+            width: width,
+            height: height
+        )
+    }
+
+    /// One lamp in the side bezel; the details live in 菜单 so the game's
+    /// name plate stays clear.
+    private var statusDot: some View {
+        Circle()
+            .fill(model.connected ? Color.green : Color.orange)
+            .frame(width: 9, height: 9)
+            .shadow(color: .black.opacity(0.45), radius: 2)
+            .allowsHitTesting(false)
+    }
+
+    private var statusLines: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(model.connected ? "PC 已连接" : "PC 未连接")
-                .foregroundStyle(shellLit ? Color.black.opacity(0.8)
-                                          : (model.connected ? Color.green : Color.orange))
-            Text("端口 \(panelServicePort)")
-            Text(model.led.valid ? "灯光: 游戏" : "灯光: 无")
-            Text(model.zones.isEmpty ? "触摸: 无" : "触摸: " + model.zones.sorted().joined(separator: " "))
-            Text(model.pressedButtons.isEmpty
-                 ? "外键: 无"
-                 : "外键: " + model.pressedButtons.map(String.init).joined(separator: " "))
+            Text("\(model.connected ? "PC 已连接" : "PC 未连接") · 端口 \(panelServicePort) · 灯光 \(model.led.valid ? "游戏" : "无") · 画面 \(model.showVideo ? "开" : "关")")
+            Text((model.zones.isEmpty ? "触摸: 无" : "触摸: " + model.zones.sorted().joined(separator: " "))
+                 + " · 外键: " + (model.pressedButtons.isEmpty
+                                  ? "无"
+                                  : model.pressedButtons.map(String.init).joined(separator: " ")))
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
         }
-        .font(.system(size: 12, weight: .medium, design: .monospaced))
-        .foregroundStyle(controlTint.opacity(0.85))
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .foregroundStyle(controlTint.opacity(0.8))
         .allowsHitTesting(false)
     }
 }
