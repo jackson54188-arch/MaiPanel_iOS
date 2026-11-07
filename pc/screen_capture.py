@@ -190,20 +190,25 @@ def client_box(hwnd):
     return (origin.x, origin.y, origin.x + width, origin.y + height)
 
 
-def crop_9_16(box):
-    """Center-crop a screen box to the game's portrait aspect."""
+def crop_aspect(box, aspect):
+    """Center-crop a screen box to `aspect` without touching the outside."""
     left, top, right, bottom = box
     width = right - left
     height = bottom - top
-    if width / height > ASPECT:
-        new_width = int(round(height * ASPECT))
+    if width / height > aspect:
+        new_width = int(round(height * aspect))
         left += (width - new_width) // 2
         width = new_width
     else:
-        new_height = int(round(width / ASPECT))
+        new_height = int(round(width / aspect))
         top += (height - new_height) // 2
         height = new_height
     return (left, top, left + width, top + height)
+
+
+def crop_9_16(box):
+    """Center-crop a screen box to the game's portrait aspect."""
+    return crop_aspect(box, ASPECT)
 
 
 class FastGrabber:
@@ -238,11 +243,11 @@ class FastGrabber:
         gdi32.SetBrushOrgEx(self.mem_dc, 0, 0, None)
         self.ok = bool(self.screen_dc and self.mem_dc and self.bits)
 
-    def grab(self, box):
-        """PIL image of the cropped box, or None if GDI refused."""
+    def grab(self, box, aspect=ASPECT):
+        """PIL image of the box (centre-cropped to `aspect`), or None."""
         if not self.ok:
             return None
-        left, top, right, bottom = crop_9_16(box)
+        left, top, right, bottom = crop_aspect(box, aspect) if aspect else box
         if right <= left or bottom <= top:
             return None
         if not gdi32.StretchBlt(self.mem_dc, 0, 0, self.width, self.height,
@@ -273,7 +278,8 @@ class GameCapture:
     is only ~608 px wide on a 1080p monitor, so upscaling would just cost bytes.
     """
 
-    def __init__(self, max_width=0, quality=55, exe_name=GAME_EXE, log=None):
+    def __init__(self, max_width=0, quality=55, exe_name=GAME_EXE, log=None,
+                 layout="auto"):
         self.max_width = max_width
         self.quality = quality
         self.exe_name = exe_name
@@ -286,6 +292,14 @@ class GameCapture:
         self._gdi = None
         self._gdi_failed = False
         self.camera = None
+        # "single" = one 9:16 picture, "dual" = 1P left / 2P right (18:16).
+        # Auto detection samples the window twice a second; see _layout().
+        self.layout = "single"
+        self.forced_layout = layout if layout in ("single", "dual") else None
+        self._layout_at = 0.0
+        self._layout_streak = 0
+        self._layout_guess = None
+        self._sampler = None
         self._open_camera()
 
     def _open_camera(self):
@@ -354,20 +368,100 @@ class GameCapture:
                 return data if data and len(data) <= 65000 else None
             quality -= 10
 
-    def grab(self):
-        """One JPEG frame, or None when nothing new is on screen right now."""
+    def _content_ratio(self, box):
+        """Fraction of the window width that is not a black letterbox bar."""
+        width = box[2] - box[0]
+        height = box[3] - box[1]
+        if width <= 0 or height <= 0:
+            return None
+        sample_width = 160
+        sample_height = max(16, int(round(sample_width * height / width)))
+        if self._sampler is None or (self._sampler.width, self._sampler.height) != (
+                sample_width, sample_height):
+            if self._sampler is not None:
+                self._sampler.close()
+            self._sampler = FastGrabber(sample_width, sample_height, smooth=False)
+            if not self._sampler.ok:
+                self._sampler = None
+                return None
+        image = self._sampler.grab(box, aspect=None)
+        if image is None:
+            return None
+        gray = image.convert("L")
+        w, h = gray.size
+        pixels = list(gray.getdata())
+        need = max(2, h // 40)
+        left = right = None
+        for x in range(w):
+            count = 0
+            for value in pixels[x::w]:
+                if value > 12:
+                    count += 1
+                    if count >= need:
+                        if left is None:
+                            left = x
+                        right = x
+                        break
+        if left is None:
+            return None
+        return (right - left + 1) / w
+
+    def _layout(self, box):
+        if self.forced_layout:
+            return self.forced_layout
+        now = time.time()
+        if now - self._layout_at < 0.5:
+            return self.layout
+        self._layout_at = now
+        ratio = self._content_ratio(box)
+        if ratio is None:
+            return self.layout
+        window_aspect = (box[2] - box[0]) / max(1, box[3] - box[1])
+        guess = "dual" if window_aspect >= 0.75 and ratio > 0.5 else "single"
+        if guess == self.layout:
+            self._layout_streak = 0
+            self._layout_guess = None
+            return self.layout
+        if guess != self._layout_guess:
+            self._layout_guess = guess
+            self._layout_streak = 0
+        self._layout_streak += 1
+        if self._layout_streak >= 3:
+            self.layout = guess
+            self._layout_streak = 0
+            self._layout_guess = None
+            self.log("画面布局: " + ("双人左右分屏 (左 1P / 右 2P)"
+                                     if guess == "dual" else "单人"))
+        return self.layout
+
+    def grab_players(self, slots):
+        """{slot: jpeg} for the requested players, empty when nothing changed."""
         hwnd = self._window()
         if not hwnd:
             self.misses += 1
             self._warn("等待 Sinmai 窗口")
-            return None
+            return {}
         box = client_box(hwnd)
         if not box:
             self.misses += 1
             self._warn("游戏窗口最小化或太小")
-            return None
+            return {}
 
-        crop = crop_9_16(box)
+        if self._layout(box) == "dual":
+            content = crop_aspect(box, ASPECT * 2)
+            split = content[0] + (content[2] - content[0]) // 2
+            halves = {}
+            if 1 in slots:
+                halves[1] = (content[0], content[1], split, content[3])
+            if 2 in slots:
+                halves[2] = (split, content[1], content[2], content[3])
+            return self._grab_halves(content, halves)
+
+        if 1 not in slots:
+            return {}
+        return self._grab_one(crop_9_16(box), 1)
+
+    def _grab_one(self, crop, slot):
         size = self._target_size(crop)
         if self._target != size:
             self._target = size
@@ -385,12 +479,55 @@ class GameCapture:
                 if cv2 is not None and tuple(frame.shape[1::-1]) != size:
                     frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
                 elif cv2 is None:
-                    return self._encode(self._slow_from_array(frame, size), size)
-                return self._encode(frame, size)
+                    data = self._encode(self._slow_from_array(frame, size), size)
+                    return {slot: data} if data else {}
+                data = self._encode(frame, size)
+                return {slot: data} if data else {}
             if self.camera is not None:
-                return None
-        image = self._gdi_image(box, size) or self._slow_image(box, size)
-        return self._encode(image, size)
+                return {}
+        image = self._gdi_image(crop, size) or self._slow_image(crop, size)
+        data = self._encode(image, size)
+        return {slot: data} if data else {}
+
+    def _grab_halves(self, content, halves):
+        sizes = {slot: self._target_size(box) for slot, box in halves.items()}
+        if self.camera is not None:
+            try:
+                # One grab of the whole 18:16 content, then split it: a second
+                # grab would return None because the desktop did not change.
+                frame = self.camera.grab(region=content)
+            except Exception as error:
+                self.log(f"桌面复制抓帧失败 ({error}), 退回 GDI 抓屏")
+                self.camera = None
+                frame = None
+            if frame is not None:
+                split = frame.shape[1] // 2
+                out = {}
+                for slot, size in sizes.items():
+                    part = frame[:, :split] if slot == 1 else frame[:, split:]
+                    if cv2 is not None:
+                        if tuple(part.shape[1::-1]) != size:
+                            part = cv2.resize(part, size, interpolation=cv2.INTER_AREA)
+                        data = self._encode(part, size)
+                    else:
+                        data = self._encode(self._slow_from_array(part, size), size)
+                    if data:
+                        out[slot] = data
+                return out
+            if self.camera is not None:
+                return {}
+        out = {}
+        for slot, box in halves.items():
+            size = sizes[slot]
+            image = self._gdi_image(box, size) or self._slow_image(box, size)
+            data = self._encode(image, size)
+            if data:
+                out[slot] = data
+        return out
+
+    def grab(self):
+        """One 1P JPEG frame, or None when nothing new is on screen."""
+        return self.grab_players([1]).get(1)
 
     @staticmethod
     def _slow_from_array(frame, size):
@@ -400,6 +537,9 @@ class GameCapture:
         if self._gdi is not None:
             self._gdi.close()
             self._gdi = None
+        if self._sampler is not None:
+            self._sampler.close()
+            self._sampler = None
         camera, self.camera = self.camera, None
         if camera is not None:
             try:
@@ -414,6 +554,8 @@ def main():
     parser.add_argument("--save", default=None, help="把一帧存成 JPEG 方便检查")
     parser.add_argument("--width", type=int, default=0, help="0 = 窗口原分辨率")
     parser.add_argument("--quality", type=int, default=68)
+    parser.add_argument("--layout", choices=("auto", "single", "dual"),
+                        default="auto", help="画面布局, auto = 按画面内容判断")
     args = parser.parse_args()
 
     hwnd = find_game_window(args.exe)
@@ -422,7 +564,8 @@ def main():
         return 1
     print(f"窗口句柄 {hwnd} 客户区 {client_box(hwnd)}")
     capture = GameCapture(max_width=args.width, quality=args.quality,
-                          exe_name=args.exe, log=lambda text: print(text))
+                          exe_name=args.exe, log=lambda text: print(text),
+                          layout=args.layout)
 
     # The desktop duplicator only hands out frames when something moved, so
     # keep a frame around and only time the ones that really arrived.
@@ -436,7 +579,7 @@ def main():
             found += 1
     spent = time.perf_counter() - started
     print(f"{found}/60 帧有新画面, {spent * 1000 / 60:.1f} ms/次, "
-          f"每帧 {len(data) if data else 0} 字节")
+          f"每帧 {len(data) if data else 0} 字节, 布局 {capture.layout}")
 
     if args.save and data:
         with open(args.save, "wb") as handle:

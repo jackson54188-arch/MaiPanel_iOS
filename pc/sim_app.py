@@ -1,7 +1,8 @@
 """Fake iPad panel: TCP server that streams touch frames, for testing bridge.py
 without the device or a build.
 
-    python sim_app.py
+    python sim_app.py                 # 1P, port 24870
+    python sim_app.py --player 2      # 2P, port 24880
     python bridge.py --serial none
 """
 
@@ -13,8 +14,8 @@ import threading
 import time
 
 from bridge import (
-    FRAME_BUTTONS, FRAME_LED, FRAME_MAGIC, FRAME_PING, FRAME_SYSTEM, FRAME_TOUCH,
-    LED_MAGIC, LED_PORT, ZONES, log,
+    FRAME_BUTTONS, FRAME_CONTROL, FRAME_LED, FRAME_MAGIC, FRAME_PING,
+    FRAME_SYSTEM, FRAME_TOUCH, LED_MAGIC, LED_PORT, ZONES, log,
 )
 
 
@@ -32,6 +33,10 @@ def send_buttons(conn, mask):
 
 def send_system(conn, key_id):
     conn.sendall(frame(FRAME_SYSTEM, bytes([key_id])))
+
+
+def send_control(conn, cmd, value):
+    conn.sendall(frame(FRAME_CONTROL, bytes([cmd, value])))
 
 
 def read_frames(conn):
@@ -61,7 +66,7 @@ def read_frames(conn):
                     f"b/c/s={payload[25]}/{payload[26]}/{payload[27]}")
 
 
-def led_demo():
+def led_demo(player=1):
     """Sends fake mod datagrams so the app can be tested without the game."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     phase = 0.0
@@ -74,14 +79,15 @@ def led_demo():
                 int((math.sin(angle + 2.1) + 1) * 127.5),
                 int((math.sin(angle + 4.2) + 1) * 127.5),
             ])
-        payload = bytes([1, 1] + colors + [200, 120, 60])
+        payload = bytes([player, 1] + colors + [200, 120, 60])
         sock.sendto(LED_MAGIC + payload, ("127.0.0.1", LED_PORT))
         phase += 0.15
         time.sleep(1 / 30)
 
 
-def session(conn):
-    log("bridge 已连接")
+def session(conn, player=1):
+    log(f"bridge 已连接 ({player}P)")
+    send_control(conn, 2, player)
     threading.Thread(target=read_frames, args=(conn,), daemon=True).start()
     try:
         for index in range(len(ZONES)):
@@ -110,20 +116,27 @@ def session(conn):
 
 
 def main():
-    positional = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
-    port = int(positional[0]) if positional else 24870
-    if "--led" in sys.argv:
-        threading.Thread(target=led_demo, daemon=True).start()
-        log(f"模拟灯光每 33ms 发往 127.0.0.1:{LED_PORT}")
+    arguments = list(sys.argv[1:])
+    player = 1
+    if "--player" in arguments:
+        index = arguments.index("--player")
+        if index + 1 < len(arguments) and arguments[index + 1] == "2":
+            player = 2
+        del arguments[index:index + 2]
+    positional = [arg for arg in arguments if not arg.startswith("--")]
+    port = int(positional[0]) if positional else (24880 if player == 2 else 24870)
+    if "--led" in arguments:
+        threading.Thread(target=led_demo, args=(player,), daemon=True).start()
+        log(f"模拟 {player}P 灯光每 33ms 发往 127.0.0.1:{LED_PORT}")
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(("0.0.0.0", port))
     server.listen(1)
-    log(f"模拟 iPad 监听 {port}")
+    log(f"模拟 {player}P iPad 监听 {port}")
     while True:
         conn, address = server.accept()
         log(f"来自 {address}")
-        threading.Thread(target=session, args=(conn,), daemon=True).start()
+        threading.Thread(target=session, args=(conn, player), daemon=True).start()
 
 
 if __name__ == "__main__":

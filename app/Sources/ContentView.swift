@@ -18,6 +18,7 @@ final class PanelModel: ObservableObject {
     @Published private(set) var connected = false
     @Published private(set) var buttons: UInt8 = 0
     @Published private(set) var led = LedRenderState()
+    @Published private(set) var slot: Int
 
     @Published var mirrored = false
     @Published var rotated = false
@@ -32,7 +33,9 @@ final class PanelModel: ObservableObject {
     @Published private(set) var scopeIndex = 1
 
     private static let scopes: [CGFloat] = [0.012, 0.02, 0.03]
+    private static let slotKey = "panelSlot"
     var scopeLabel: String { ["小", "中", "大"][scopeIndex] }
+    var slotLabel: String { slot == 2 ? "2P" : "1P" }
     var pressedButtons: [Int] {
         (0..<8).filter { (buttons & UInt8(1 << $0)) != 0 }.map { $0 + 1 }
     }
@@ -48,15 +51,18 @@ final class PanelModel: ObservableObject {
     private var lastLed: LedSnapshot?
 
     init() {
+        slot = UserDefaults.standard.integer(forKey: Self.slotKey) == 2 ? 2 : 1
         let maskURL = Bundle.main.url(forResource: "panel_mask", withExtension: "png")
         mask = maskURL.flatMap { ZoneMask(url: $0) }
         zoneCenters = Self.loadCenters()
 
         server.onConnected = { [weak self] in
             Task { @MainActor in
-                self?.connected = true
+                guard let self else { return }
+                self.connected = true
+                self.server.sendSlot(self.slot)
                 // The bridge forgets the mirror state, so re-announce it.
-                self?.server.sendVideoControl(self?.showVideo ?? false)
+                self.server.sendVideoControl(self.showVideo)
             }
         }
         server.onDisconnected = { [weak self] in
@@ -72,7 +78,21 @@ final class PanelModel: ObservableObject {
         server.onVideo = { data in
             VideoSink.shared.push(data)
         }
-        server.start()
+        server.start(port: panelPort(for: slot))
+    }
+
+    /// Switch this iPad between the 1P and 2P panels; the listener moves to
+    /// the matching port so the bridge's forward pairs with it again.
+    func setSlot(_ next: Int) {
+        let next = next == 2 ? 2 : 1
+        guard next != slot else { return }
+        slot = next
+        UserDefaults.standard.set(slot, forKey: Self.slotKey)
+        connected = false
+        led.valid = false
+        VideoSink.shared.clear()
+        server.stop()
+        server.start(port: panelPort(for: slot))
     }
 
     func handleTouch(_ points: [CGPoint]) {
@@ -332,6 +352,9 @@ struct ContentView: View {
                 panelKey("TEST", key: "test")
                 panelKey("SERVICE", key: "service")
                 panelKey("投币", key: "coin")
+                panelChip(model.slot == 2 ? "玩家 2P" : "玩家 1P", isOn: model.slot == 2) {
+                    model.setSlot(model.slot == 2 ? 1 : 2)
+                }
             }
             HStack(spacing: 8) {
                 panelChip("镜像", isOn: model.mirrored) { model.mirrored.toggle() }
@@ -535,7 +558,7 @@ struct ContentView: View {
         let pc = model.connected ? "PC 已连接" : "PC 未连接"
         let led = model.led.valid ? "游戏" : "无"
         let video = model.showVideo ? "开" : "关"
-        return "\(pc) · 端口 \(panelServicePort) · 灯光 \(led) · 画面 \(video)"
+        return "\(model.slotLabel) · \(pc) · 端口 \(panelPort(for: model.slot)) · 灯光 \(led) · 画面 \(video)"
     }
 
     private var touchLine: String {

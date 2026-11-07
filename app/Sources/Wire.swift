@@ -29,6 +29,12 @@ func encodeVideoControl(_ on: Bool) -> Data {
     encodeFrame(.control, Data([1, on ? 1 : 0]))
 }
 
+/// Command 2 reports which slot the app is set to (1 or 2), so the bridge can
+/// warn when an iPad is on the wrong port.
+func encodeSlotControl(_ slot: Int) -> Data {
+    encodeFrame(.control, Data([2, UInt8(max(1, min(2, slot)))]))
+}
+
 /// Game LED state relayed from the PC mod: 8 button colours plus the cabinet
 /// body/circle/side brightness bytes.
 struct LedSnapshot: Equatable {
@@ -68,7 +74,16 @@ enum SystemKey: String {
 }
 
 let protocolVersion: UInt8 = 1
-let panelServicePort: UInt16 = 24870
+
+/// One PC with two iPads: 1P listens on 24870, 2P on 24880. The bridge runs
+/// one usbmux forward per port, so each iPad pairs itself by slot.
+let panelServicePort1P: UInt16 = 24870
+let panelServicePort2P: UInt16 = 24880
+let panelServicePort: UInt16 = panelServicePort1P
+
+func panelPort(for slot: Int) -> UInt16 {
+    slot == 2 ? panelServicePort2P : panelServicePort1P
+}
 
 /// Wire format, little endian:
 ///   "MPNL" | version:u8 | type:u8 | length:u16 | payload

@@ -85,6 +85,29 @@ final class PanelServer {
         }
     }
 
+    func sendSlot(_ slot: Int) {
+        queue.async { [weak self] in
+            guard let self, let connection = self.connection else { return }
+            self.send(encodeSlotControl(slot), on: connection)
+        }
+    }
+
+    /// Close the listener so the app can come back on the other slot's port.
+    func stop() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.keepAlive?.cancel()
+            self.keepAlive = nil
+            self.listener?.cancel()
+            self.listener = nil
+            self.connection?.cancel()
+            self.connection = nil
+            self.lastMask = 0
+            self.lastButtons = 0
+            self.inbox.removeAll()
+        }
+    }
+
     private func accept(_ connection: NWConnection) {
         self.connection?.cancel()
         self.connection = connection
