@@ -75,8 +75,21 @@ final class ZoneMask {
 
     /// `point` is normalised (0...1) inside the map rectangle.
     func zones(at point: CGPoint) -> Set<String> {
-        var found: Set<String> = []
         let radius = sampleScope * CGFloat(min(bitmap.width, bitmap.height))
+        // A finger placed exactly on a painted-out seam between two zones can
+        // have all nine probes land on black and the tap is lost. Widen the
+        // ring step by step instead: the first radius that reaches any colour
+        // wins, and touching a seam reports both flanking zones. The search
+        // stops at 6x the scope so a press in a wide empty area still misses.
+        for scale in stride(from: CGFloat(1), through: 6, by: 0.5) {
+            let found = sampleZones(at: point, radius: radius * scale)
+            if !found.isEmpty { return found }
+        }
+        return []
+    }
+
+    private func sampleZones(at point: CGPoint, radius: CGFloat) -> Set<String> {
+        var found: Set<String> = []
         // centre + 8 points on a circle, matching the reference implementation
         for index in 0..<9 {
             let angle = CGFloat(index) * (.pi / 4)

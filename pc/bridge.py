@@ -610,12 +610,14 @@ class VideoHub:
     down the middle: left = 1P, right = 2P.
     """
 
-    def __init__(self, players, max_width=0, fps=60, quality=68, layout="auto"):
+    def __init__(self, players, max_width=0, fps=60, quality=68, layout="auto",
+                 gdi=False):
         self.players = players
         self.max_width = max_width
         self.interval = 1.0 / max(1, fps)
         self.quality = quality
         self.layout = layout
+        self.gdi = gdi
         self.enabled = {slot: False for slot in players}
         self.running = True
         self.capture = None
@@ -630,7 +632,8 @@ class VideoHub:
             return False
         self.capture = GameCapture(max_width=self.max_width,
                                    quality=self.quality, log=log,
-                                   layout=self.layout)
+                                   layout=self.layout,
+                                   use_camera=not self.gdi)
         threading.Thread(target=self._loop, daemon=True).start()
         return True
 
@@ -868,6 +871,8 @@ def main():
                         help="画面帧率, 0 = 不启动画面镜像")
     parser.add_argument("--video-layout", choices=("auto", "single", "dual"),
                         default="auto", help="画面布局, auto = 按画面内容判断")
+    parser.add_argument("--video-gdi", action="store_true",
+                        help="画面改用 GDI 抓屏: 桌面复制抓到黑块时对比用")
     args = parser.parse_args()
 
     players = {1: Player(1, args.host, args.port, args.serial, args.baud)}
@@ -883,7 +888,7 @@ def main():
     video = None
     if args.video_fps:
         video = VideoHub(players, max_width=args.video_width, fps=args.video_fps,
-                         layout=args.video_layout)
+                         layout=args.video_layout, gdi=args.video_gdi)
         if not video.start():
             video = None
     for player in players.values():

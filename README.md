@@ -105,6 +105,16 @@ pc\build_exe.bat
 推给 iPad；2P 时游戏左右分屏，会自动判断左半给 1P、右半给 2P。认错了可以
 给桥接程序加 `--video-layout single` 或 `--video-layout dual`。
 
+如果镜像里有一整块纯黑、但游戏窗口本身正常，先对比两种抓屏方式：
+
+```
+python pc/screen_capture.py --save dxcam.jpg
+python pc/screen_capture.py --save gdi.jpg --gdi
+```
+
+`gdi.jpg` 正常而 `dxcam.jpg` 是黑块，说明桌面复制漏掉了视频层，用
+`bridge.bat --video-gdi` 启动即可改走 GDI 抓屏。
+
 ## 许可
 
 [MIT](LICENSE)

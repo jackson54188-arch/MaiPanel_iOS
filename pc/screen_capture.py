@@ -279,10 +279,11 @@ class GameCapture:
     """
 
     def __init__(self, max_width=0, quality=68, exe_name=GAME_EXE, log=None,
-                 layout="auto", sharpen=0.3):
+                 layout="auto", sharpen=0.3, use_camera=True):
         self.max_width = max_width
         self.quality = quality
         self.sharpen = sharpen
+        self.use_camera = use_camera
         self.exe_name = exe_name
         self.log = log or (lambda text: None)
         self.hwnd = None
@@ -304,6 +305,9 @@ class GameCapture:
         self._open_camera()
 
     def _open_camera(self):
+        if not self.use_camera:
+            self.log("按参数使用 GDI 抓屏")
+            return False
         if dxcam is None or np is None:
             self.log("没有 dxcam, 退回 GDI 抓屏")
             return False
@@ -579,6 +583,8 @@ def main():
     parser.add_argument("--quality", type=int, default=68)
     parser.add_argument("--layout", choices=("auto", "single", "dual"),
                         default="auto", help="画面布局, auto = 按画面内容判断")
+    parser.add_argument("--gdi", action="store_true",
+                        help="跳过桌面复制, 直接用 GDI 抓屏 (画面里有黑块时对比用)")
     args = parser.parse_args()
 
     hwnd = find_game_window(args.exe)
@@ -588,7 +594,7 @@ def main():
     print(f"窗口句柄 {hwnd} 客户区 {client_box(hwnd)}")
     capture = GameCapture(max_width=args.width, quality=args.quality,
                           exe_name=args.exe, log=lambda text: print(text),
-                          layout=args.layout)
+                          layout=args.layout, use_camera=not args.gdi)
 
     # The desktop duplicator only hands out frames when something moved, so
     # keep a frame around and only time the ones that really arrived.
