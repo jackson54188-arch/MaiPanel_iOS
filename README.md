@@ -104,7 +104,8 @@ pc\build_exe.bat
 
 在 iPad 的菜单里打开「画面」。电脑端按 60fps 抓取游戏窗口，裁成 9:16
 推给 iPad；2P 时游戏左右分屏，会自动判断左半给 1P、右半给 2P。认错了可以
-给桥接程序加 `--video-layout single` 或 `--video-layout dual`。
+给桥接程序加 `--video-layout single` 或 `--video-layout dual`。2p目前还有不可
+知的程序问题，投屏容易出错，后续会找到原因并改进。
 
 如果镜像里有一整块纯黑、但游戏窗口本身正常，先对比两种抓屏方式：
 
