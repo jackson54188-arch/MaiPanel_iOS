@@ -610,7 +610,7 @@ class VideoHub:
     down the middle: left = 1P, right = 2P.
     """
 
-    def __init__(self, players, max_width=0, fps=60, quality=55, layout="auto"):
+    def __init__(self, players, max_width=0, fps=60, quality=68, layout="auto"):
         self.players = players
         self.max_width = max_width
         self.interval = 1.0 / max(1, fps)

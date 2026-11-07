@@ -16,7 +16,7 @@ import sys
 import time
 from ctypes import wintypes
 
-from PIL import Image, ImageGrab
+from PIL import Image, ImageFilter, ImageGrab
 
 try:
     import numpy as np
@@ -278,10 +278,11 @@ class GameCapture:
     is only ~608 px wide on a 1080p monitor, so upscaling would just cost bytes.
     """
 
-    def __init__(self, max_width=0, quality=55, exe_name=GAME_EXE, log=None,
-                 layout="auto"):
+    def __init__(self, max_width=0, quality=68, exe_name=GAME_EXE, log=None,
+                 layout="auto", sharpen=0.3):
         self.max_width = max_width
         self.quality = quality
+        self.sharpen = sharpen
         self.exe_name = exe_name
         self.log = log or (lambda text: None)
         self.hwnd = None
@@ -354,6 +355,23 @@ class GameCapture:
         return image.resize(size, Image.BILINEAR)
 
     def _encode(self, image, size):
+        # The iPad upscales the 608-wide picture to roughly twice its size, so
+        # a mild unsharp mask recovers some of the edge contrast bilinear
+        # scaling eats. Applied once; re-sharpening per quality step would pile
+        # halos on top of each other.
+        if self.sharpen:
+            # GDI/Pillow hands back RGB; move it to the same BGR array path so
+            # the unsharp mask does not cost 20 ms in pure Python.
+            if (cv2 is not None and np is not None
+                    and not isinstance(image, np.ndarray)):
+                image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+            if cv2 is not None and np is not None and isinstance(image, np.ndarray):
+                blur = cv2.GaussianBlur(image, (0, 0), 1.0)
+                image = cv2.addWeighted(image, 1.0 + self.sharpen, blur,
+                                        -self.sharpen, 0)
+            else:
+                image = image.filter(ImageFilter.UnsharpMask(
+                    radius=1, percent=int(self.sharpen * 100), threshold=0))
         quality = self.quality
         while True:
             if cv2 is not None and np is not None and isinstance(image, np.ndarray):
@@ -364,9 +382,11 @@ class GameCapture:
                 buffer = io.BytesIO()
                 image.save(buffer, "JPEG", quality=quality, optimize=False)
                 data = buffer.getvalue()
-            if len(data) <= 60000 or quality <= 25:
+            # The frame header carries a u16 length and the app drops anything
+            # over 65000 bytes, so the quality steps stop at 64 KB.
+            if len(data) <= 64000 or quality <= 25:
                 return data if data and len(data) <= 65000 else None
-            quality -= 10
+            quality -= 5
 
     def _content_ratio(self, box):
         """Fraction of the window width that is not a black letterbox bar."""
@@ -457,14 +477,20 @@ class GameCapture:
                 halves[2] = (split, content[1], content[2], content[3])
             return self._grab_halves(content, halves)
 
-        if 1 not in slots:
+        # Single layout is one full-screen UI (menus, TEST, results). Both iPads
+        # get the same picture instead of only 1P, which used to leave 2P blank.
+        slots = [slot for slot in slots if slot in (1, 2)]
+        if not slots:
             return {}
-        return self._grab_one(crop_9_16(box), 1)
+        return self._grab_one(crop_9_16(box), slots)
 
-    def _grab_one(self, crop, slot):
+    def _grab_one(self, crop, slots):
         size = self._target_size(crop)
         if self._target != size:
             self._target = size
+
+        def wrap(data):
+            return {slot: data for slot in slots} if data else {}
 
         if self.camera is not None:
             try:
@@ -479,15 +505,12 @@ class GameCapture:
                 if cv2 is not None and tuple(frame.shape[1::-1]) != size:
                     frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
                 elif cv2 is None:
-                    data = self._encode(self._slow_from_array(frame, size), size)
-                    return {slot: data} if data else {}
-                data = self._encode(frame, size)
-                return {slot: data} if data else {}
+                    return wrap(self._encode(self._slow_from_array(frame, size), size))
+                return wrap(self._encode(frame, size))
             if self.camera is not None:
                 return {}
         image = self._gdi_image(crop, size) or self._slow_image(crop, size)
-        data = self._encode(image, size)
-        return {slot: data} if data else {}
+        return wrap(self._encode(image, size))
 
     def _grab_halves(self, content, halves):
         sizes = {slot: self._target_size(box) for slot, box in halves.items()}

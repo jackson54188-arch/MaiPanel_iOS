@@ -156,7 +156,7 @@ final class PanelServer {
                 continue
             }
             // Length is u16, and video frames use most of that range; the
-            // bridge keeps each JPEG under 60 KB.
+            // bridge keeps each JPEG under 64 KB.
             let length = Int(inbox[6]) | (Int(inbox[7]) << 8)
             guard length <= 65000 else {
                 inbox.removeFirst()
