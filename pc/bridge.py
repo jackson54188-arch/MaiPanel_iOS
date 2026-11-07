@@ -60,7 +60,8 @@ LED_UDP_SIZE = 33
 LED_PAYLOAD_SIZE = 28
 
 # Payload id from the iPad's system-key frame -> SYSTEM_VKS name.
-SYSTEM_FRAME_KEYS = {1: "test", 2: "service", 3: "coin", 4: "select", 5: "card"}
+SYSTEM_FRAME_KEYS = {1: "test", 2: "service", 3: "coin", 4: "select",
+                     5: "card", 6: "close"}
 
 # Outer buttons 1..8 -> keyboard virtual key codes. 1P matches AquaMai
 # KeyMap Button*_1P (E D C X Z A Q W), 2P matches Button*_2P (Keypad
@@ -80,7 +81,7 @@ SYSTEM_VKS = {
         "card": 0x0D},
 }
 SYSTEM_LABELS = {"test": "TEST", "service": "SERVICE", "coin": "投币", "select": "三角",
-                 "card": "刷卡"}
+                 "card": "刷卡", "close": "关闭"}
 
 # aimeio presents its virtual card only while Enter is held down, so the card
 # key needs a much longer press than the other keys.
@@ -160,6 +161,9 @@ class KeyInjector:
 
     def tap(self, name, hold=None):
         """Momentary press for TEST / SERVICE / COIN / select (triangle) / card."""
+        if name == "close":
+            self.close_window()
+            return
         vk = SYSTEM_VKS[self.slot].get(name)
         if vk is None:
             log(f"未知系统键: {name}")
@@ -175,6 +179,18 @@ class KeyInjector:
             time.sleep(hold)
             self._send(vk, False)
         log(f"{self.slot}P 系统键 {label}")
+
+    def close_window(self):
+        """Alt+F4; closes whichever window is in front, normally the game."""
+        if not self.enabled:
+            log("非 Windows 环境, 不注入 关闭")
+            return
+        with self.tap_lock:
+            self._send(0x12, True)   # Alt
+            self._send(0x73, True)   # F4
+            self._send(0x73, False)
+            self._send(0x12, False)
+        log(f"{self.slot}P 系统键 关闭 (Alt+F4)")
 
     def _send(self, vk, down):
         if not self.enabled:

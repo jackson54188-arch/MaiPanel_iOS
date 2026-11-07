@@ -22,9 +22,9 @@ final class PanelModel: ObservableObject {
 
     @Published var mirrored = false
     @Published var rotated = false
-    @Published var showLabels = true
+    @Published var showLabels = false
     @Published var showLights = true
-    @Published var showVideo = false {
+    @Published var showVideo = true {
         didSet {
             server.sendVideoControl(showVideo)
             if !showVideo { VideoSink.shared.clear() }
@@ -323,12 +323,13 @@ struct ContentView: View {
         shellLit ? Color.black.opacity(0.12) : Color.white.opacity(0.12)
     }
 
-    /// Only the three keys used mid-credit keep a permanent button; everything
-    /// else, including the setup toggles, lives one tap deeper in 菜单.
+    /// Only the keys used mid-credit keep a permanent button; everything
+    /// else, including TEST / SERVICE / close, lives one tap deeper in 菜单.
     private func controlRow(width: CGFloat) -> some View {
         HStack(spacing: 10) {
             systemKey("三角", key: "select")
             systemKey("刷卡", key: "card")
+            systemKey("投币", key: "coin")
             Button {
                 menuOpen.toggle()
             } label: {
@@ -351,7 +352,7 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 panelKey("TEST", key: "test")
                 panelKey("SERVICE", key: "service")
-                panelKey("投币", key: "coin")
+                panelKey("关闭", key: "close")
                 panelChip(model.slot == 2 ? "玩家 2P" : "玩家 1P", isOn: model.slot == 2) {
                     model.setSlot(model.slot == 2 ? 1 : 2)
                 }
