@@ -1,11 +1,11 @@
 @echo off
 setlocal
 rem Build pc\ledmod\MaiPanelLed.cs and install it into the game Mods folder.
-rem Usage: build_led_mod.bat [game folder]   (default D:\SEGA\Maimai\Package)
+rem Usage: build_led_mod.bat <game folder>   (the folder that contains Sinmai_Data)
 
 set "GAME=%~1"
-if "%GAME%"=="" set "GAME=D:\SEGA\Maimai\Package"
-set "CSC=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if "%GAME%"=="" goto no_game_arg
+set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 set "MELON=%GAME%\MelonLoader\net35"
 set "MANAGED=%GAME%\Sinmai_Data\Managed"
 
@@ -42,5 +42,11 @@ exit /b 1
 :failed
 echo.
 echo [ERROR] Compile failed, game Mods folder left unchanged.
+pause
+exit /b 1
+
+:no_game_arg
+echo [ERROR] Game folder not given.
+echo Usage: build_led_mod.bat ^<game folder^>
 pause
 exit /b 1

@@ -1,9 +1,31 @@
+# Xcode / xcodegen
 app/MaiPanel.xcodeproj/
 app/build/
+app/DerivedData/
 app/xcodebuild.log
-*.log
+xcuserdata/
+*.xcuserstate
 *.ipa
 Payload/
+
+# Python
 __pycache__/
-dist/
+*.py[cod]
+*.log
+.venv/
+venv/
+
+# PyInstaller
 build/
+dist/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+
+# Local backups
+*.bak

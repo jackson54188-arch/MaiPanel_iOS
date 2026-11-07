@@ -70,11 +70,14 @@ final class VideoSink {
 /// screen: the strip along the top and the round play area. The game paints
 /// solid black filler in between, which used to cover the cabinet shell light.
 final class MirrorImageView: UIView {
-    /// Measured on the real screen, as fractions of the 9:16 game frame: the
-    /// top strip ends at 21.1% and the round screen starts at 43.7%.
-    static let stripFraction: CGFloat = 0.211
-    /// Height over width of that strip crop, used to size the pink frame.
-    static let stripAspect: CGFloat = stripFraction * 16 / 9
+    /// The top display is the first 23.4% of the 9:16 game frame (23.3% plus
+    /// a pixel of slack); the round screen starts at 43.7%. Cutting at 21.1%
+    /// left the display's bottom border line outside the crop.
+    static let stripFraction: CGFloat = 0.234
+    /// Height over width of the pink frame. Deliberately not tied to
+    /// stripFraction: at 0.234 the frame would grow into the control row, so
+    /// the picture is squeezed slightly to fill the existing frame instead.
+    static let stripAspect: CGFloat = 0.3751
     private static let discCenterX: CGFloat = 0.4984
     private static let discCenterY: CGFloat = 0.719
     private static let discRadius: CGFloat = 0.2815
